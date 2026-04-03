@@ -38,9 +38,26 @@ archives:
       - binary
     name_template: '{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
 
+sboms:
+  - artifacts: binary
+
 checksum:
   name_template: checksums.txt
   algorithm: sha256
+
+# Sign checksums.txt with cosign keyless (sigstore) so Scorecard's
+# Signed-Releases check can verify the release's authenticity.
+signs:
+  - cmd: cosign
+    certificate: '${artifact}.pem'
+    args:
+      - sign-blob
+      - '--output-certificate=${certificate}'
+      - '--output-signature=${signature}'
+      - '${artifact}'
+      - '--yes'
+    artifacts: checksum
+    output: true
 
 changelog:
   use: github

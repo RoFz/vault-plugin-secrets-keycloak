@@ -5,6 +5,8 @@ on:
     branches:
       - main
 
+permissions: read-all
+
 jobs:
   # Run dependency submission first so the snapshot for the PR head SHA is
   # available before the review action queries it. This follows the official
@@ -26,7 +28,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Skip for fork PRs — GITHUB_TOKEN is read-only there and cannot submit
+      # snapshots to the base repo. dependency-review still runs below.
       - name: Submit dependency snapshot
+        if: github.event.pull_request.head.repo.fork == false
         uses: actions/go-dependency-submission@f35d5c9af13ce9cc32f7930b171e315e878f6921 # v2.0.3
 
   dependency-review:
