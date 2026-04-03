@@ -78,10 +78,12 @@ jobs:
         env:
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: |
-          echo "## Release ${TAG} — SHA256 Checksums" >> "$GITHUB_STEP_SUMMARY"
-          echo '' >> "$GITHUB_STEP_SUMMARY"
-          echo '| Binary | SHA256 |' >> "$GITHUB_STEP_SUMMARY"
-          echo '|--------|--------|' >> "$GITHUB_STEP_SUMMARY"
-          while IFS='  ' read -r hash binary; do
-            echo "| \`${binary}\` | \`${hash}\` |" >> "$GITHUB_STEP_SUMMARY"
-          done < checksums.txt
+          {
+            echo "## Release ${TAG} — SHA256 Checksums"
+            echo ''
+            echo '| Binary | SHA256 |'
+            echo '|--------|--------|'
+            while IFS='  ' read -r hash binary; do
+              echo "| \`${binary}\` | \`${hash}\` |"
+            done < checksums.txt
+          } >> "$GITHUB_STEP_SUMMARY"
