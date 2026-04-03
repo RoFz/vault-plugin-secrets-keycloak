@@ -63,3 +63,25 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload per-binary .sha256 sidecars
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          while IFS='  ' read -r hash binary; do
+            printf '%s' "$hash" > "${binary}.sha256"
+            gh release upload "$TAG" "${binary}.sha256" --clobber
+          done < checksums.txt
+
+      - name: Write SHA256 checksums to job summary
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          echo "## Release ${TAG} — SHA256 Checksums" >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo '| Binary | SHA256 |' >> "$GITHUB_STEP_SUMMARY"
+          echo '|--------|--------|' >> "$GITHUB_STEP_SUMMARY"
+          while IFS='  ' read -r hash binary; do
+            echo "| \`${binary}\` | \`${hash}\` |" >> "$GITHUB_STEP_SUMMARY"
+          done < checksums.txt
