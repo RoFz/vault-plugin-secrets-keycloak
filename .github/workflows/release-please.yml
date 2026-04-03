@@ -72,7 +72,7 @@ jobs:
           while IFS='  ' read -r hash binary; do
             printf '%s' "$hash" > "${binary}.sha256"
             gh release upload "$TAG" "${binary}.sha256" --clobber
-          done < checksums.txt
+          done < dist/checksums.txt
 
       - name: Write SHA256 checksums to job summary
         env:
@@ -85,5 +85,5 @@ jobs:
             echo '|--------|--------|'
             while IFS='  ' read -r hash binary; do
               echo "| \`${binary}\` | \`${hash}\` |"
-            done < checksums.txt
+            done < dist/checksums.txt
           } >> "$GITHUB_STEP_SUMMARY"
