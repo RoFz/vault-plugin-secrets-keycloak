@@ -59,6 +59,8 @@ jobs:
   govulncheck:
     name: Vulnerability Scan
     runs-on: ubuntu-latest
+    permissions:
+      security-events: write
 
     steps:
       # NOTE: Adopted from HashiCorp vault-workflows-common — action refs are
