@@ -15,6 +15,9 @@ jobs:
   dependency-snapshot:
     name: Submit Dependency Snapshot
     runs-on: ubuntu-latest
+    # Skip for release-please PRs — they only modify CHANGELOG.md and
+    # .release-please-manifest.json, never dependency manifests.
+    if: "!startsWith(github.head_ref, 'release-please--branches--')"
     permissions:
       contents: write
 
@@ -38,6 +41,7 @@ jobs:
     name: Dependency Review
     runs-on: ubuntu-latest
     needs: dependency-snapshot
+    if: "!startsWith(github.head_ref, 'release-please--branches--')"
     permissions:
       contents: read
       pull-requests: write
