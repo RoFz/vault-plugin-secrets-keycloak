@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/RoFz/vault-plugin-secrets-keycloak/compare/v0.1.0...v0.1.1) (2026-04-03)
+
+
+### Bug Fixes
+
+* bump github.com/go-jose/go-jose/v4 from 4.1.3 to 4.1.4 ([8f4b437](https://github.com/RoFz/vault-plugin-secrets-keycloak/commit/8f4b437cc852e8bc1642dc6c727ccbf568b89452))
+* bump github.com/hashicorp/vault/api from 1.22.0 to 1.23.0 in the go-dependencies group across 1 directory ([3dd6ed6](https://github.com/RoFz/vault-plugin-secrets-keycloak/commit/3dd6ed63bf8a7c6fb63569a02b73b080ae1f56ca))
+
 ## 0.1.0 (2026-04-03)
 
 
