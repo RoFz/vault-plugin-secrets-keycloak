@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+  pull_request:
+    branches:
+      - main
+
+permissions: read-all
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      # NOTE: Adopted from HashiCorp vault-workflows-common — action refs are
+      # pinned to full commit SHAs for supply-chain security.
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # NOTE: Adopted from HashiCorp vault-workflows-common — action refs are
+      # pinned to full commit SHAs for supply-chain security.
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # NOTE: Adopted from HashiCorp vault-workflows-common — detects a missing
+      # 'go mod tidy' run, which can leave go.mod/go.sum out of sync.
+      - name: Check go mod tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      # NOTE: Adopted from HashiCorp vault-workflows-common — enforces consistent
+      # Go formatting using gofumpt (a stricter superset of gofmt).
+      - name: Check formatting (gofumpt)
+        run: |
+          go install mvdan.cc/gofumpt@v0.9.2
+          test -z "$(gofumpt -l .)"
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      # NOTE: Adopted from HashiCorp vault-workflows-common — builds the plugin
+      # binary as a final sanity check that the cmd entry point compiles cleanly.
+      - name: Build plugin binary
+        run: go build -o /dev/null ./cmd/vault-plugin-secrets-keycloak
+
+  govulncheck:
+    name: Vulnerability Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+
+    steps:
+      # NOTE: Adopted from HashiCorp vault-workflows-common — action refs are
+      # pinned to full commit SHAs for supply-chain security.
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # NOTE: Adopted from HashiCorp vault-workflows-common — action refs are
+      # pinned to full commit SHAs for supply-chain security.
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+
+      # Outputs SARIF (exits 0 regardless of findings per govulncheck docs).
+      - name: Run govulncheck
+        run: govulncheck -format sarif ./... > govulncheck.sarif
+
+      # govulncheck emits duplicate CVE IDs in properties.tags, which GitHub's
+      # SARIF validator rejects (uniqueItems: true). Deduplicate before upload.
+      - name: Deduplicate SARIF tags
+        run: |
+          jq '.runs[].tool.driver.rules[].properties.tags |= unique' \
+            govulncheck.sarif > govulncheck-deduped.sarif
+          mv govulncheck-deduped.sarif govulncheck.sarif
+
+      # NOTE: Uploads govulncheck findings to GitHub Code Scanning (Security tab).
+      # Skip for fork PRs — GITHUB_TOKEN is read-only there and cannot write
+      # to the Security tab. always() ensures we still upload when govulncheck
+      # itself exits non-zero (though it's documented to exit 0).
+      - name: Upload SARIF to Code Scanning
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4.35.1
+        if: always() && github.event.pull_request.head.repo.fork != true
+        with:
+          sarif_file: govulncheck.sarif
+          category: govulncheck
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      # NOTE: Adopted from HashiCorp vault-workflows-common — action refs are
+      # pinned to full commit SHAs for supply-chain security.
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # NOTE: Adopted from HashiCorp vault-workflows-common — action refs are
+      # pinned to full commit SHAs for supply-chain security.
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0

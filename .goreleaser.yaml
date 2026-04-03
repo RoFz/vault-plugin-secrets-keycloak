@@ -1,0 +1,83 @@
+version: 2
+
+builds:
+  - id: vault-plugin-secrets-keycloak
+    main: ./cmd/vault-plugin-secrets-keycloak
+    binary: vault-plugin-secrets-keycloak
+    goos:
+      - linux
+      - darwin
+      - windows
+      - freebsd
+    goarch:
+      - amd64
+      - arm64
+      - '386'
+    ignore:
+      - goos: darwin
+        goarch: '386'
+      - goos: windows
+        goarch: arm64
+      - goos: windows
+        goarch: '386'
+      - goos: freebsd
+        goarch: arm64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+archives:
+  - id: vault-plugin-secrets-keycloak
+    ids:
+      - vault-plugin-secrets-keycloak
+    # Raw binary — no archive wrapper. Vault plugin register needs the bare binary.
+    formats:
+      - binary
+    name_template: '{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+
+sboms:
+  - artifacts: binary
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# Sign checksums.txt with cosign keyless (sigstore) so Scorecard's
+# Signed-Releases check can verify the release's authenticity.
+signs:
+  - cmd: cosign
+    certificate: '${artifact}.pem'
+    args:
+      - sign-blob
+      - '--output-certificate=${certificate}'
+      - '--output-signature=${signature}'
+      - '${artifact}'
+      - '--yes'
+    artifacts: checksum
+    output: true
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^feat(\(.+\))?!?:'
+      order: 0
+    - title: Bug Fixes
+      regexp: '^fix(\(.+\))?!?:'
+      order: 1
+    - title: Security
+      regexp: '^sec(\(.+\))?!?:'
+      order: 2
+    - title: Other Changes
+      order: 999
+  filters:
+    exclude:
+      - '^chore(\(.+\))?:'
+      - '^docs(\(.+\))?:'
+      - '^ci(\(.+\))?:'
+      - '^test(\(.+\))?:'
+      - '^build(\(.+\))?:'
