@@ -177,7 +177,7 @@ func (b *keycloakBackend) setRole(ctx context.Context, s logical.Storage, name s
 }
 
 const (
-	pathRoleHelpSynopsis = `Manage Vault roles for Keycloak password rotation.`
+	pathRoleHelpSynopsis    = `Manage Vault roles for Keycloak password rotation.`
 	pathRoleHelpDescription = `
 This path maps a Vault role name to a Keycloak username. When credentials
 are requested for a role, Vault generates a new random password and sets it

@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      # NOTE: Adopted from HashiCorp vault-workflows-common — action refs are
+      # pinned to full commit SHAs for supply-chain security.
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # NOTE: Adopted from HashiCorp vault-workflows-common — action refs are
+      # pinned to full commit SHAs for supply-chain security.
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # NOTE: Adopted from HashiCorp vault-workflows-common — detects a missing
+      # 'go mod tidy' run, which can leave go.mod/go.sum out of sync.
+      - name: Check go mod tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      # NOTE: Adopted from HashiCorp vault-workflows-common — enforces consistent
+      # Go formatting using gofumpt (a stricter superset of gofmt).
+      - name: Check formatting (gofumpt)
+        run: |
+          go install mvdan.cc/gofumpt@v0.9.2
+          test -z "$(gofumpt -l .)"
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      # NOTE: Adopted from HashiCorp vault-workflows-common — builds the plugin
+      # binary as a final sanity check that the cmd entry point compiles cleanly.
+      - name: Build plugin binary
+        run: go build -o /dev/null ./cmd/vault-plugin-secrets-keycloak
+
+  govulncheck:
+    name: Vulnerability Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      # NOTE: Adopted from HashiCorp vault-workflows-common — action refs are
+      # pinned to full commit SHAs for supply-chain security.
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # NOTE: Adopted from HashiCorp vault-workflows-common — action refs are
+      # pinned to full commit SHAs for supply-chain security.
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+
+      # Outputs SARIF (exits 0 regardless of findings per govulncheck docs).
+      # TODO: switch upload step to github/codeql-action/upload-sarif once the
+      # repo is public (GitHub Advanced Security required for private repos).
+      - name: Run govulncheck
+        run: govulncheck -format sarif ./... > govulncheck.sarif
+
+      - name: Upload SARIF report
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        if: always()
+        with:
+          name: govulncheck-sarif
+          path: govulncheck.sarif
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      # NOTE: Adopted from HashiCorp vault-workflows-common — action refs are
+      # pinned to full commit SHAs for supply-chain security.
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # NOTE: Adopted from HashiCorp vault-workflows-common — action refs are
+      # pinned to full commit SHAs for supply-chain security.
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0

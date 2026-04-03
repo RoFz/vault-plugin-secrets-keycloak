@@ -30,7 +30,7 @@ type keycloakBackend struct {
 
 // backend configures the Vault plugin backend with all paths and secrets.
 func backend() *keycloakBackend {
-	var b = keycloakBackend{}
+	b := keycloakBackend{}
 
 	b.Backend = &framework.Backend{
 		Help:           strings.TrimSpace(backendHelp),

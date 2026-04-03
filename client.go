@@ -90,7 +90,7 @@ func (c *keycloakClient) getAdminToken(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("error fetching admin token: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -128,7 +128,7 @@ func (c *keycloakClient) getUserIDByUsername(ctx context.Context, token, usernam
 	if err != nil {
 		return "", fmt.Errorf("error listing users: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -187,7 +187,7 @@ func (c *keycloakClient) ResetPassword(ctx context.Context, username, password s
 	if err != nil {
 		return fmt.Errorf("error sending reset-password request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
@@ -215,7 +215,7 @@ func (c *keycloakClient) ListUsers(ctx context.Context) ([]keycloakUserInfo, err
 	if err != nil {
 		return nil, fmt.Errorf("error listing users: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -251,7 +251,7 @@ func (c *keycloakClient) GetUser(ctx context.Context, username string) (*keycloa
 	if err != nil {
 		return nil, fmt.Errorf("error fetching user: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
