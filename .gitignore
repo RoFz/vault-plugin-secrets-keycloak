@@ -33,3 +33,4 @@ vault/plugins/
 # Editor/IDE
 .idea/
 .vscode/
+__pycache__/

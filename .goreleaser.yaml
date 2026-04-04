@@ -49,7 +49,7 @@ checksum:
 # Signed-Releases check can verify the release's authenticity.
 signs:
   - cmd: cosign
-    signature: "${artifact}.sigstore.json"
+    signature: '${artifact}.sigstore.json'
     args:
       - sign-blob
       - '--bundle=${signature}'
@@ -68,9 +68,6 @@ changelog:
     - title: Bug Fixes
       regexp: '^fix(\(.+\))?!?:'
       order: 1
-    - title: Security
-      regexp: '^sec(\(.+\))?!?:'
-      order: 2
     - title: Other Changes
       order: 999
   filters:

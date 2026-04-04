@@ -60,10 +60,14 @@ Format: `<type>[optional scope]: <description>`
 | `feat:` | New application features or capabilities | Yes (minor) |
 | `fix:` | Bug fixes in application code or dependencies | Yes (patch) |
 | `feat!:` or `fix!:` | Breaking change | Yes (major) |
+| `build:` | Build system or external dependency changes | No |
+| `chore:` | Maintenance, formatting, config | No |
 | `ci:` | CI/CD, workflows, tooling, and infrastructure | No |
 | `docs:` | Documentation only | No |
-| `chore:` | Maintenance, formatting, config | No |
+| `perf:` | Performance improvements (no behaviour change) | No |
 | `refactor:` | Code restructuring (no behaviour change) | No |
+| `revert:` | Reverts a previous commit | No |
+| `style:` | Code style changes (whitespace, formatting) | No |
 | `test:` | Test changes | No |
 
 > **Important:** `feat:` and `fix:` are reserved exclusively for changes to
