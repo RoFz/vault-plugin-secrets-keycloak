@@ -12,12 +12,17 @@ const configStoragePath = "config"
 
 // keycloakConfig holds the minimum configuration needed to call the Keycloak Admin API.
 type keycloakConfig struct {
-	URL         string `json:"url"`
-	Realm       string `json:"realm"`
-	TargetRealm string `json:"target_realm"`
-	ClientID    string `json:"client_id"`
-	Username    string `json:"username"`
-	Password    string `json:"password"`
+	URL                 string `json:"url"`
+	Realm               string `json:"realm"`
+	TargetRealm         string `json:"target_realm"`
+	ClientID            string `json:"client_id"`
+	MasterAdminUsername string `json:"master_admin_username"`
+	MasterAdminPassword string `json:"master_admin_password"`
+	KVMountPath         string `json:"kv_mount_path"`
+	KVSecretPath        string `json:"kv_secret_path"`
+	KVAPIAddr           string `json:"kv_api_addr"`
+	KVTLSSkipVerify     bool   `json:"kv_tls_skip_verify"`
+	KVToken             string `json:"kv_token"`
 }
 
 // pathConfig registers the /config endpoint on the backend.
@@ -32,8 +37,9 @@ func pathConfig(b *keycloakBackend) *framework.Path {
 			},
 			"realm": {
 				Type:        framework.TypeString,
-				Description: "Auth realm used to obtain admin tokens (typically \"master\").",
-				Required:    true,
+				Description: "Auth realm used to obtain admin tokens. Defaults to \"master\".",
+				Required:    false,
+				Default:     "master",
 			},
 			"target_realm": {
 				Type:        framework.TypeString,
@@ -45,15 +51,43 @@ func pathConfig(b *keycloakBackend) *framework.Path {
 				Description: "OIDC client used to obtain admin tokens. Defaults to \"admin-cli\".",
 				Required:    false,
 			},
-			"username": {
+			"master_admin_username": {
 				Type:        framework.TypeString,
-				Description: "Keycloak admin username (e.g. \"admin\").",
+				Description: "Username of the master realm admin used to obtain admin tokens (e.g. \"admin\").",
 				Required:    true,
 			},
-			"password": {
+			"master_admin_password": {
 				Type:        framework.TypeString,
-				Description: "Password for the admin user.",
+				Description: "Password of the master realm admin.",
 				Required:    true,
+				DisplayAttrs: &framework.DisplayAttributes{
+					Sensitive: true,
+				},
+			},
+			"kv_mount_path": {
+				Type:        framework.TypeString,
+				Description: "KV v2 mount name used for KV sync after password rotation (e.g. \"k8s\"). Optional.",
+				Required:    false,
+			},
+			"kv_secret_path": {
+				Type:        framework.TypeString,
+				Description: "Path within the KV v2 mount to PATCH after password rotation (e.g. \"keycloak/realm-users\"). Optional.",
+				Required:    false,
+			},
+			"kv_api_addr": {
+				Type:        framework.TypeString,
+				Description: "Vault API address used to write KV sync requests (e.g. \"https://vault.vault.svc.cluster.local:8200\"). Defaults to https://127.0.0.1:8200 if not set.",
+				Required:    false,
+			},
+			"kv_tls_skip_verify": {
+				Type:        framework.TypeBool,
+				Description: "Skip TLS certificate verification when calling the Vault KV API. Use when Vault uses a self-signed certificate. Defaults to false.",
+				Required:    false,
+			},
+			"kv_token": {
+				Type:        framework.TypeString,
+				Description: "Vault service token used to write KV sync updates. Must carry a policy with create/update/patch on the KV data path. Should be a periodic orphan token to avoid expiry.",
+				Required:    false,
 				DisplayAttrs: &framework.DisplayAttributes{
 					Sensitive: true,
 				},
@@ -103,11 +137,16 @@ func (b *keycloakBackend) pathConfigRead(ctx context.Context, req *logical.Reque
 	// password is intentionally omitted from the read response.
 	return &logical.Response{
 		Data: map[string]interface{}{
-			"url":          config.URL,
-			"realm":        config.Realm,
-			"target_realm": config.TargetRealm,
-			"client_id":    config.ClientID,
-			"username":     config.Username,
+			"url":                   config.URL,
+			"realm":                 config.Realm,
+			"target_realm":          config.TargetRealm,
+			"client_id":             config.ClientID,
+			"master_admin_username": config.MasterAdminUsername,
+			"kv_mount_path":         config.KVMountPath,
+			"kv_secret_path":        config.KVSecretPath,
+			"kv_api_addr":           config.KVAPIAddr,
+			"kv_tls_skip_verify":    config.KVTLSSkipVerify,
+			// master_admin_password and kv_token intentionally omitted from read response.
 		},
 	}, nil
 }
@@ -126,6 +165,8 @@ func (b *keycloakBackend) pathConfigWrite(ctx context.Context, req *logical.Requ
 	}
 	if v, ok := data.GetOk("realm"); ok {
 		config.Realm = v.(string)
+	} else if config.Realm == "" {
+		config.Realm = "master"
 	}
 	if v, ok := data.GetOk("target_realm"); ok {
 		config.TargetRealm = v.(string)
@@ -133,11 +174,26 @@ func (b *keycloakBackend) pathConfigWrite(ctx context.Context, req *logical.Requ
 	if v, ok := data.GetOk("client_id"); ok {
 		config.ClientID = v.(string)
 	}
-	if v, ok := data.GetOk("username"); ok {
-		config.Username = v.(string)
+	if v, ok := data.GetOk("master_admin_username"); ok {
+		config.MasterAdminUsername = v.(string)
 	}
-	if v, ok := data.GetOk("password"); ok {
-		config.Password = v.(string)
+	if v, ok := data.GetOk("master_admin_password"); ok {
+		config.MasterAdminPassword = v.(string)
+	}
+	if v, ok := data.GetOk("kv_mount_path"); ok {
+		config.KVMountPath = v.(string)
+	}
+	if v, ok := data.GetOk("kv_secret_path"); ok {
+		config.KVSecretPath = v.(string)
+	}
+	if v, ok := data.GetOk("kv_api_addr"); ok {
+		config.KVAPIAddr = v.(string)
+	}
+	if v, ok := data.GetOk("kv_tls_skip_verify"); ok {
+		config.KVTLSSkipVerify = v.(bool)
+	}
+	if v, ok := data.GetOk("kv_token"); ok {
+		config.KVToken = v.(string)
 	}
 
 	entry, err := logical.StorageEntryJSON(configStoragePath, config)
@@ -162,7 +218,7 @@ func (b *keycloakBackend) pathConfigWrite(ctx context.Context, req *logical.Requ
 			"url", config.URL,
 			"realm", config.Realm,
 			"target_realm", targetRealm,
-			"username", config.Username,
+			"master_admin_username", config.MasterAdminUsername,
 			"error", err,
 		)
 	} else if _, err := client.getAdminToken(ctx); err != nil {
@@ -170,7 +226,7 @@ func (b *keycloakBackend) pathConfigWrite(ctx context.Context, req *logical.Requ
 			"url", config.URL,
 			"realm", config.Realm,
 			"target_realm", targetRealm,
-			"username", config.Username,
+			"master_admin_username", config.MasterAdminUsername,
 			"error", err,
 		)
 	} else {
@@ -178,7 +234,7 @@ func (b *keycloakBackend) pathConfigWrite(ctx context.Context, req *logical.Requ
 			"url", config.URL,
 			"realm", config.Realm,
 			"target_realm", targetRealm,
-			"username", config.Username,
+			"master_admin_username", config.MasterAdminUsername,
 		)
 	}
 
@@ -224,8 +280,8 @@ without requiring a client secret. Write the configuration as follows:
     url="https://keycloak.example.com" \
     realm="master" \
     target_realm="myrealm" \
-    username="admin" \
-    password="<admin-password>"
+    master_admin_username="admin" \
+    master_admin_password="<admin-password>"
 
 client_id defaults to "admin-cli" if omitted.
 If target_realm is omitted it defaults to the value of realm.
