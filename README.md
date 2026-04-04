@@ -27,6 +27,7 @@ inside Vault.
     - [Direct manifest method (fallback)](#direct-manifest-method-fallback)
       - [Copy binary to the Vault pod](#copy-binary-to-the-vault-pod)
       - [Register and enable](#register-and-enable)
+      - [Upgrade or remove](#upgrade-or-remove)
   - [Configuration](#configuration)
   - [Multiple Keycloak contexts](#multiple-keycloak-contexts)
   - [Expected logs](#expected-logs)
@@ -210,13 +211,25 @@ All SHA256 values must match before proceeding.
 
 #### Register and enable
 
-Register and enable the plugin:
+Register and enable the plugin (the `-version` flag must match the version
+reported by the binary):
 
 ```bash
 SHA256=$(kubectl exec -n vault vault-0 -- sha256sum /vault/plugins/vault-plugin-secrets-keycloak | cut -d' ' -f1)
+VERSION="v0.1.1"
 
-vault plugin register -sha256="$SHA256" secret vault-plugin-secrets-keycloak
+vault plugin register -sha256="$SHA256" -version="$VERSION" secret vault-plugin-secrets-keycloak
 vault secrets enable -path=keycloak vault-plugin-secrets-keycloak
+```
+
+#### Upgrade or remove
+
+To upgrade or remove the plugin, first disable the secrets engine, then
+deregister the plugin with the version it was registered under:
+
+```bash
+vault secrets disable keycloak/
+vault plugin deregister -version="$VERSION" secret vault-plugin-secrets-keycloak
 ```
 
 ## Configuration
