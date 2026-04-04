@@ -29,6 +29,7 @@ inside Vault.
   - [Configuration](#configuration)
   - [Multiple Keycloak contexts](#multiple-keycloak-contexts)
   - [Expected logs](#expected-logs)
+  - [API reference](#api-reference)
   - [Usage](#usage)
   - [Credential lifecycle](#credential-lifecycle)
   - [Contributing](#contributing)
@@ -287,6 +288,95 @@ Error examples:
 - `failed to create Keycloak client`
 - `keycloak config saved but connection test failed`
 - `failed to rotate password`
+
+## API reference
+
+All paths below are relative to the mount point (default `keycloak/`).
+
+### `config`
+
+Configure the Keycloak backend. The plugin authenticates as an admin user
+via the Resource Owner Password Credentials (ROPC) grant.
+
+| Method | Vault CLI |
+| --- | --- |
+| Create / Update | `vault write keycloak/config ...` |
+| Read | `vault read keycloak/config` |
+| Delete | `vault delete keycloak/config` |
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `url` | string | yes | — | Base URL of the Keycloak server. |
+| `realm` | string | yes | — | Auth realm used to obtain admin tokens (typically `master`). |
+| `target_realm` | string | no | value of `realm` | Realm whose users will be managed. |
+| `client_id` | string | no | `admin-cli` | OIDC client used for the ROPC grant. |
+| `username` | string | yes | — | Keycloak admin username. |
+| `password` | string | yes | — | Password for the admin user. |
+
+### `role/<name>`
+
+Map a Vault role name to a Keycloak username. Used by the alpha
+`creds/<name>` lease-based path.
+
+| Method | Vault CLI |
+| --- | --- |
+| Create / Update | `vault write keycloak/role/<name> ...` |
+| Read | `vault read keycloak/role/<name>` |
+| Delete | `vault delete keycloak/role/<name>` |
+| List | `vault list keycloak/role` |
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | string | yes | — | Vault role name. |
+| `keycloak_username` | string | yes | — | Keycloak username whose password will be rotated. |
+| `ttl` | duration | no | `3600` (1 h) | Lease duration before automatic revocation. |
+| `max_ttl` | duration | no | `86400` (24 h) | Maximum lease duration. |
+
+### `users/`
+
+| Method | Vault CLI |
+| --- | --- |
+| List | `vault list keycloak/users` |
+
+Returns the usernames of all users in the target realm (up to 500).
+
+### `users/<username>`
+
+| Method | Vault CLI |
+| --- | --- |
+| Read | `vault read keycloak/users/<username>` |
+
+Returns the user's username, internal Keycloak ID, enabled status, email,
+first name, and last name.
+
+### `users/<username>/rotate`
+
+| Method | Vault CLI |
+| --- | --- |
+| Update | `vault write -force keycloak/users/<username>/rotate` |
+
+Generates a cryptographically random password (`crypto/rand`), sets it on
+the Keycloak user via the Admin REST API, and returns `{ username, password }`.
+The previous password is immediately invalidated. No lease is created.
+
+### `creds/<name>` (alpha)
+
+| Method | Vault CLI |
+| --- | --- |
+| Read | `vault read keycloak/creds/<name>` |
+
+Generates a password and sets it on the Keycloak user bound to `<name>`.
+Returns `{ username, password }` with a Vault lease. On lease revocation the
+password is rotated again to a discarded value, invalidating the issued
+credential. On lease renewal the TTL is extended without rotation.
+
+> **Alpha:** automatic lease expiry and revocation have not been fully
+> validated end-to-end. See the [Credential lifecycle](#credential-lifecycle)
+> section for caveats.
 
 ## Usage
 

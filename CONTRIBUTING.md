@@ -30,6 +30,13 @@ go build ./...
 go test ./...
 ```
 
+### Test policy
+
+All new features and bug fixes **must** include corresponding tests. The CI
+pipeline runs the full test suite on every push and pull request; merges are
+blocked if tests fail. When modifying existing behaviour, update the affected
+tests to reflect the change.
+
 ## Linting
 
 The CI pipeline enforces linting via
