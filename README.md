@@ -5,6 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/RoFz/vault-plugin-secrets-keycloak)](https://github.com/RoFz/vault-plugin-secrets-keycloak/releases/latest)
 [![Go](https://img.shields.io/badge/go-1.25-blue)](https://go.dev/doc/go1.25)
 [![License](https://img.shields.io/github/license/RoFz/vault-plugin-secrets-keycloak)](LICENSE)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12363/badge)](https://www.bestpractices.dev/projects/12363)
 
 A HashiCorp Vault secrets engine plugin for Keycloak. Performs on-demand,
 audit-logged user password rotation via the Keycloak Admin REST API. Each
@@ -30,6 +31,12 @@ inside Vault.
   - [Multiple Keycloak contexts](#multiple-keycloak-contexts)
   - [Expected logs](#expected-logs)
   - [API reference](#api-reference)
+    - [`config`](#config)
+    - [`role/<name>`](#rolename)
+    - [`users/`](#users)
+    - [`users/<username>`](#usersusername)
+    - [`users/<username>/rotate`](#usersusernamerotate)
+    - [`creds/<name>` (alpha)](#credsname-alpha)
   - [Usage](#usage)
   - [Credential lifecycle](#credential-lifecycle)
   - [Contributing](#contributing)
