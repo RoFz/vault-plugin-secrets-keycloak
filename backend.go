@@ -39,7 +39,7 @@ func backend() *keycloakBackend {
 			LocalStorage: []string{},
 			SealWrapStorage: []string{
 				"config",
-				"role/*",
+				"roles/*",
 			},
 		},
 		Paths: framework.PathAppend(
@@ -96,7 +96,7 @@ func (b *keycloakBackend) getClient(ctx context.Context, s logical.Storage) (*ke
 		b.Logger().Error("failed to create Keycloak client",
 			"url", config.URL,
 			"realm", config.Realm,
-			"username", config.Username,
+			"master_admin_username", config.MasterAdminUsername,
 			"error", err,
 		)
 		return nil, err
@@ -111,6 +111,6 @@ The Keycloak secrets engine rotates passwords for Keycloak realm users.
 Configure the backend at "config" with the Keycloak server URL, realm name,
 and a service-account client ID and secret that has the "manage-users" role.
 
-Create roles at "role/<name>" mapping a Vault role to a Keycloak username.
+Create roles at "roles/<name>" mapping a Vault role to a Keycloak username.
 Read "creds/<role>" to obtain a freshly rotated password for that user.
 `

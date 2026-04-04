@@ -41,16 +41,16 @@ func newClient(config *keycloakConfig) (*keycloakClient, error) {
 		return nil, fmt.Errorf("keycloak URL is required")
 	}
 	if config.Realm == "" {
-		return nil, fmt.Errorf("keycloak realm is required")
+		config.Realm = "master"
 	}
 	if config.ClientID == "" {
 		config.ClientID = "admin-cli"
 	}
-	if config.Username == "" {
-		return nil, fmt.Errorf("keycloak username is required")
+	if config.MasterAdminUsername == "" {
+		return nil, fmt.Errorf("master_admin_username is required")
 	}
-	if config.Password == "" {
-		return nil, fmt.Errorf("keycloak password is required")
+	if config.MasterAdminPassword == "" {
+		return nil, fmt.Errorf("master_admin_password is required")
 	}
 
 	targetRealm := config.TargetRealm
@@ -63,8 +63,8 @@ func newClient(config *keycloakConfig) (*keycloakClient, error) {
 		realm:       config.Realm,
 		targetRealm: targetRealm,
 		clientID:    config.ClientID,
-		username:    config.Username,
-		password:    config.Password,
+		username:    config.MasterAdminUsername,
+		password:    config.MasterAdminPassword,
 		httpClient:  &http.Client{Timeout: 30 * time.Second},
 	}, nil
 }

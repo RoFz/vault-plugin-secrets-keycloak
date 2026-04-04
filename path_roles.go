@@ -14,6 +14,7 @@ type keycloakRoleEntry struct {
 	KeycloakUsername string        `json:"keycloak_username"`
 	TTL              time.Duration `json:"ttl"`
 	MaxTTL           time.Duration `json:"max_ttl"`
+	KVPasswordKey    string        `json:"kv_password_key"`
 }
 
 // toResponseData returns the role fields safe to show in a read response.
@@ -22,14 +23,15 @@ func (r *keycloakRoleEntry) toResponseData() map[string]interface{} {
 		"keycloak_username": r.KeycloakUsername,
 		"ttl":               r.TTL.Seconds(),
 		"max_ttl":           r.MaxTTL.Seconds(),
+		"kv_password_key":   r.KVPasswordKey,
 	}
 }
 
-// pathRole registers the /role/<name> and /role/ (list) endpoints.
+// pathRole registers the /roles/<name> and /roles/ (list) endpoints.
 func pathRole(b *keycloakBackend) []*framework.Path {
 	return []*framework.Path{
 		{
-			Pattern: "role/" + framework.GenericNameRegex("name"),
+			Pattern: "roles/" + framework.GenericNameRegex("name"),
 			Fields: map[string]*framework.FieldSchema{
 				"name": {
 					Type:        framework.TypeLowerCaseString,
@@ -50,6 +52,11 @@ func pathRole(b *keycloakBackend) []*framework.Path {
 					Type:        framework.TypeDurationSecond,
 					Description: "Maximum lease duration. Defaults to 24 hours.",
 					Default:     86400,
+				},
+				"kv_password_key": {
+					Type:        framework.TypeString,
+					Description: "KV v2 key to PATCH with the new password after rotation via creds/<role>. Optional.",
+					Required:    false,
 				},
 			},
 			Operations: map[logical.Operation]framework.OperationHandler{
@@ -75,7 +82,7 @@ func pathRole(b *keycloakBackend) []*framework.Path {
 			HelpDescription: pathRoleHelpDescription,
 		},
 		{
-			Pattern: "role/?$",
+			Pattern: "roles/?$",
 			Operations: map[logical.Operation]framework.OperationHandler{
 				logical.ListOperation: &framework.PathOperation{
 					Callback: b.pathRoleList,
@@ -133,19 +140,22 @@ func (b *keycloakBackend) pathRoleWrite(ctx context.Context, req *logical.Reques
 	if role.MaxTTL > 0 && role.TTL > role.MaxTTL {
 		return logical.ErrorResponse("ttl cannot exceed max_ttl"), nil
 	}
+	if v, ok := data.GetOk("kv_password_key"); ok {
+		role.KVPasswordKey = v.(string)
+	}
 
 	return nil, b.setRole(ctx, req.Storage, name, role)
 }
 
 func (b *keycloakBackend) pathRoleDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	if err := req.Storage.Delete(ctx, "role/"+data.Get("name").(string)); err != nil {
+	if err := req.Storage.Delete(ctx, "roles/"+data.Get("name").(string)); err != nil {
 		return nil, err
 	}
 	return nil, nil
 }
 
 func (b *keycloakBackend) pathRoleList(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	entries, err := req.Storage.List(ctx, "role/")
+	entries, err := req.Storage.List(ctx, "roles/")
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +163,7 @@ func (b *keycloakBackend) pathRoleList(ctx context.Context, req *logical.Request
 }
 
 func (b *keycloakBackend) getRole(ctx context.Context, s logical.Storage, name string) (*keycloakRoleEntry, error) {
-	entry, err := s.Get(ctx, "role/"+name)
+	entry, err := s.Get(ctx, "roles/"+name)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +179,7 @@ func (b *keycloakBackend) getRole(ctx context.Context, s logical.Storage, name s
 }
 
 func (b *keycloakBackend) setRole(ctx context.Context, s logical.Storage, name string, role *keycloakRoleEntry) error {
-	entry, err := logical.StorageEntryJSON("role/"+name, role)
+	entry, err := logical.StorageEntryJSON("roles/"+name, role)
 	if err != nil {
 		return err
 	}

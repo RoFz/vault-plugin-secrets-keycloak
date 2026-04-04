@@ -44,10 +44,10 @@ func TestConfigWriteRead(t *testing.T) {
 		Path:      "config",
 		Storage:   storage,
 		Data: map[string]interface{}{
-			"url":      "https://keycloak.example.com",
-			"realm":    "master",
-			"username": "admin",
-			"password": "secret",
+			"url":                   "https://keycloak.example.com",
+			"realm":                 "master",
+			"master_admin_username": "admin",
+			"master_admin_password": "secret",
 		},
 	}
 	resp, err := b.HandleRequest(ctx, req)
@@ -78,8 +78,8 @@ func TestConfigWriteRead(t *testing.T) {
 	if resp.Data["realm"] != "master" {
 		t.Errorf("expected realm 'master', got %v", resp.Data["realm"])
 	}
-	if resp.Data["username"] != "admin" {
-		t.Errorf("expected username 'admin', got %v", resp.Data["username"])
+	if resp.Data["master_admin_username"] != "admin" {
+		t.Errorf("expected master_admin_username 'admin', got %v", resp.Data["master_admin_username"])
 	}
 }
 
@@ -92,10 +92,10 @@ func TestConfigReadOmitsPassword(t *testing.T) {
 		Path:      "config",
 		Storage:   storage,
 		Data: map[string]interface{}{
-			"url":      "https://keycloak.example.com",
-			"realm":    "master",
-			"username": "admin",
-			"password": "secret",
+			"url":                   "https://keycloak.example.com",
+			"realm":                 "master",
+			"master_admin_username": "admin",
+			"master_admin_password": "secret",
 		},
 	}
 	if _, err := b.HandleRequest(ctx, req); err != nil {
@@ -111,8 +111,11 @@ func TestConfigReadOmitsPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config read error: %v", err)
 	}
-	if _, ok := resp.Data["password"]; ok {
-		t.Error("config read response must not include password")
+	if _, ok := resp.Data["master_admin_password"]; ok {
+		t.Error("config read response must not include master_admin_password")
+	}
+	if _, ok := resp.Data["kv_token"]; ok {
+		t.Error("config read response must not include kv_token")
 	}
 }
 
@@ -126,10 +129,10 @@ func TestConfigDelete(t *testing.T) {
 		Path:      "config",
 		Storage:   storage,
 		Data: map[string]interface{}{
-			"url":      "https://keycloak.example.com",
-			"realm":    "master",
-			"username": "admin",
-			"password": "secret",
+			"url":                   "https://keycloak.example.com",
+			"realm":                 "master",
+			"master_admin_username": "admin",
+			"master_admin_password": "secret",
 		},
 	}
 	if _, err := b.HandleRequest(ctx, req); err != nil {
@@ -168,7 +171,7 @@ func TestRoleWriteRead(t *testing.T) {
 
 	req := &logical.Request{
 		Operation: logical.CreateOperation,
-		Path:      "role/myrole",
+		Path:      "roles/myrole",
 		Storage:   storage,
 		Data: map[string]interface{}{
 			"keycloak_username": "testuser",
@@ -186,7 +189,7 @@ func TestRoleWriteRead(t *testing.T) {
 
 	req = &logical.Request{
 		Operation: logical.ReadOperation,
-		Path:      "role/myrole",
+		Path:      "roles/myrole",
 		Storage:   storage,
 	}
 	resp, err = b.HandleRequest(ctx, req)
@@ -208,7 +211,7 @@ func TestRoleList(t *testing.T) {
 	for _, name := range []string{"alpha", "bravo"} {
 		req := &logical.Request{
 			Operation: logical.CreateOperation,
-			Path:      "role/" + name,
+			Path:      "roles/" + name,
 			Storage:   storage,
 			Data: map[string]interface{}{
 				"keycloak_username": name + "-user",
@@ -221,7 +224,7 @@ func TestRoleList(t *testing.T) {
 
 	req := &logical.Request{
 		Operation: logical.ListOperation,
-		Path:      "role/",
+		Path:      "roles/",
 		Storage:   storage,
 	}
 	resp, err := b.HandleRequest(ctx, req)
@@ -243,7 +246,7 @@ func TestRoleDelete(t *testing.T) {
 
 	req := &logical.Request{
 		Operation: logical.CreateOperation,
-		Path:      "role/ephemeral",
+		Path:      "roles/ephemeral",
 		Storage:   storage,
 		Data: map[string]interface{}{
 			"keycloak_username": "someuser",
@@ -255,7 +258,7 @@ func TestRoleDelete(t *testing.T) {
 
 	req = &logical.Request{
 		Operation: logical.DeleteOperation,
-		Path:      "role/ephemeral",
+		Path:      "roles/ephemeral",
 		Storage:   storage,
 	}
 	if _, err := b.HandleRequest(ctx, req); err != nil {
@@ -264,7 +267,7 @@ func TestRoleDelete(t *testing.T) {
 
 	req = &logical.Request{
 		Operation: logical.ReadOperation,
-		Path:      "role/ephemeral",
+		Path:      "roles/ephemeral",
 		Storage:   storage,
 	}
 	resp, err := b.HandleRequest(ctx, req)
@@ -282,7 +285,7 @@ func TestRoleMissingUsername(t *testing.T) {
 
 	req := &logical.Request{
 		Operation: logical.CreateOperation,
-		Path:      "role/bad",
+		Path:      "roles/bad",
 		Storage:   storage,
 		Data:      map[string]interface{}{},
 	}
@@ -301,7 +304,7 @@ func TestRoleTTLExceedsMaxTTL(t *testing.T) {
 
 	req := &logical.Request{
 		Operation: logical.CreateOperation,
-		Path:      "role/bad-ttl",
+		Path:      "roles/bad-ttl",
 		Storage:   storage,
 		Data: map[string]interface{}{
 			"keycloak_username": "someuser",
@@ -315,5 +318,91 @@ func TestRoleTTLExceedsMaxTTL(t *testing.T) {
 	}
 	if resp == nil || !resp.IsError() {
 		t.Fatal("expected error response when ttl > max_ttl")
+	}
+}
+
+func TestRoleWithKVPasswordKey(t *testing.T) {
+	b, storage := newTestBackend(t)
+	ctx := context.Background()
+
+	req := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "roles/kv-role",
+		Storage:   storage,
+		Data: map[string]interface{}{
+			"keycloak_username": "testuser",
+			"kv_password_key":   "my-password-key",
+		},
+	}
+	resp, err := b.HandleRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("role write error: %v", err)
+	}
+	if resp != nil && resp.IsError() {
+		t.Fatalf("role write returned error response: %s", resp.Error().Error())
+	}
+
+	req = &logical.Request{
+		Operation: logical.ReadOperation,
+		Path:      "roles/kv-role",
+		Storage:   storage,
+	}
+	resp, err = b.HandleRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("role read error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("role read returned nil response")
+	}
+	if resp.Data["kv_password_key"] != "my-password-key" {
+		t.Errorf("expected kv_password_key 'my-password-key', got %v", resp.Data["kv_password_key"])
+	}
+}
+
+func TestConfigWithKVFields(t *testing.T) {
+	b, storage := newTestBackend(t)
+	ctx := context.Background()
+
+	req := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "config",
+		Storage:   storage,
+		Data: map[string]interface{}{
+			"url":                   "https://keycloak.example.com",
+			"master_admin_username": "admin",
+			"master_admin_password": "secret",
+			"kv_mount_path":         "k8s",
+			"kv_secret_path":        "keycloak/realm-users",
+			"kv_api_addr":           "https://vault.local:8200",
+			"kv_tls_skip_verify":    true,
+		},
+	}
+	if _, err := b.HandleRequest(ctx, req); err != nil {
+		t.Fatalf("config write error: %v", err)
+	}
+
+	req = &logical.Request{
+		Operation: logical.ReadOperation,
+		Path:      "config",
+		Storage:   storage,
+	}
+	resp, err := b.HandleRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("config read error: %v", err)
+	}
+	if resp.Data["realm"] != "master" {
+		t.Errorf("expected realm to default to 'master', got %v", resp.Data["realm"])
+	}
+	if resp.Data["kv_mount_path"] != "k8s" {
+		t.Errorf("expected kv_mount_path 'k8s', got %v", resp.Data["kv_mount_path"])
+	}
+	if resp.Data["kv_secret_path"] != "keycloak/realm-users" {
+		t.Errorf("expected kv_secret_path 'keycloak/realm-users', got %v", resp.Data["kv_secret_path"])
+	}
+	if resp.Data["kv_api_addr"] != "https://vault.local:8200" {
+		t.Errorf("expected kv_api_addr 'https://vault.local:8200', got %v", resp.Data["kv_api_addr"])
+	}
+	if resp.Data["kv_tls_skip_verify"] != true {
+		t.Errorf("expected kv_tls_skip_verify true, got %v", resp.Data["kv_tls_skip_verify"])
 	}
 }

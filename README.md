@@ -18,6 +18,7 @@ inside Vault.
 - [Vault Plugin: Keycloak Secrets Engine](#vault-plugin-keycloak-secrets-engine)
   - [Contents](#contents)
   - [What this plugin does](#what-this-plugin-does)
+  - [What this plugin does not do](#what-this-plugin-does-not-do)
   - [Process flow](#process-flow)
   - [Installation](#installation)
     - [Download pre-built binaries](#download-pre-built-binaries)
@@ -29,11 +30,13 @@ inside Vault.
       - [Register and enable](#register-and-enable)
       - [Upgrade or remove](#upgrade-or-remove)
   - [Configuration](#configuration)
-  - [Multiple Keycloak contexts](#multiple-keycloak-contexts)
+    - [KV v2 sync (optional)](#kv-v2-sync-optional)
+      - [Creating the KV sync token](#creating-the-kv-sync-token)
+  - [Multiple Keycloak contexts (untested)](#multiple-keycloak-contexts-untested)
   - [Expected logs](#expected-logs)
   - [API reference](#api-reference)
     - [`config`](#config)
-    - [`role/<name>`](#rolename)
+    - [`roles/<name>`](#rolesname)
     - [`users/`](#users)
     - [`users/<username>`](#usersusername)
     - [`users/<username>/rotate`](#usersusernamerotate)
@@ -48,9 +51,29 @@ inside Vault.
 
 This plugin mounts as a Vault secrets engine and provides endpoints to:
 
-- Configure Keycloak admin access.
-- List and read users in the target realm.
-- Rotate a user password on demand and return the new value.
+- **List and read users** in the target Keycloak realm.
+- **Rotate a user password on demand** via `users/<username>/rotate`
+  (fire-and-forget — no lease, no expiration). The new password is
+  returned to the caller and remains valid in Keycloak until the next
+  explicit rotation.
+- **Sync rotated passwords to a KV v2 secret** (v0.2.0+) — optionally
+  PATCH the new password into another Vault KV v2 path after rotation
+  (useful for Kubernetes secret operators).
+- **Issue ephemeral, lease-bound credentials** via `creds/<role>`
+  (alpha). The password is returned with a Vault lease; on lease expiry
+  or explicit revocation, the plugin resets the Keycloak password to a
+  random discarded value, invalidating both sides.
+
+## What this plugin does not do
+
+- **Create or delete Keycloak users.** The plugin only manages passwords
+  for existing users.
+- **Auto-rotate passwords on a schedule.** There is no background task
+  or periodic rotation. All rotations are triggered by an explicit API
+  call.
+- **Store passwords inside Vault.** Rotated passwords are returned to
+  the caller and (optionally) synced to a KV v2 path, but the plugin
+  itself retains no record of them.
 
 ## Process flow
 
@@ -59,11 +82,14 @@ flowchart TD
   A[Operator calls Vault path] --> B{Path}
   B -->|keycloak/config| C[Store config in Vault storage]
   C --> D[Test Keycloak connection via admin token]
-  B -->|keycloak/role/name| E[Store role → keycloak_username mapping]
+  B -->|keycloak/roles/name| E[Store role → keycloak_username mapping]
   B -->|keycloak/creds/role| F[Load role and config]
   F --> G[Generate random password]
   G --> H[Call Keycloak Admin API reset-password]
-  H --> I[Return username and new password]
+  H --> I{KV sync configured?}
+  I -->|yes| I2[PATCH password into KV v2 secret]
+  I2 --> I3[Return username and new password]
+  I -->|no| I3
   B -->|keycloak/users| J[List users in target realm]
   B -->|keycloak/users/username| K[Read user details]
   B -->|keycloak/users/username/rotate| L[Generate password + reset in Keycloak]
@@ -216,7 +242,7 @@ reported by the binary):
 
 ```bash
 SHA256=$(kubectl exec -n vault vault-0 -- sha256sum /vault/plugins/vault-plugin-secrets-keycloak | cut -d' ' -f1)
-VERSION="v0.1.1"
+VERSION="vX.Y.Z"
 
 vault plugin register -sha256="$SHA256" -version="$VERSION" secret vault-plugin-secrets-keycloak
 vault secrets enable -path=keycloak vault-plugin-secrets-keycloak
@@ -241,11 +267,86 @@ vault write keycloak/config \
   url="https://keycloak.example.com" \
   realm="master" \
   target_realm="myrealm" \
-  username="admin" \
-  password='<admin-password>'
+  master_admin_username="admin" \
+  master_admin_password='<admin-password>'
 ```
 
-## Multiple Keycloak contexts
+### KV v2 sync (optional)
+
+When a password is rotated via `creds/<role>` or `users/<username>/rotate`,
+the plugin can optionally PATCH the new password into a KV v2 secret in
+Vault. This is useful for syncing rotated credentials to Kubernetes secrets
+(via the Vault Secrets Operator or External Secrets Operator).
+
+To enable KV sync, add the KV fields to the config:
+
+```bash
+vault write keycloak/config \
+  url="https://keycloak.example.com" \
+  master_admin_username="admin" \
+  master_admin_password='<admin-password>' \
+  kv_mount_path="k8s" \
+  kv_secret_path="keycloak/realm-users" \
+  kv_token="hvs.<token>" \
+  kv_api_addr="https://vault.vault.svc.cluster.local:8200"
+```
+
+Then set `kv_password_key` on each role:
+
+```bash
+vault write keycloak/roles/myuser \
+  keycloak_username="myuser" \
+  kv_password_key="myuser-password"
+```
+
+After each `vault read keycloak/creds/myuser`, the plugin PATCHes
+`k8s/data/keycloak/realm-users` with `{ "myuser-password": "<new-pw>" }`.
+If the KV secret does not yet exist, a PUT (create) is used instead.
+
+For ad-hoc rotations via the users path, pass it as a parameter:
+
+```bash
+vault write keycloak/users/myuser/rotate kv_password_key="myuser-password"
+```
+
+KV sync failures are non-fatal — the rotation still succeeds and a warning
+is returned in the response.
+
+#### Creating the KV sync token
+
+The KV sync token needs `create`, `update`, and `patch` capabilities on the
+target KV data path. Create a scoped policy and an orphan token:
+
+```bash
+vault policy write keycloak-kv-sync - <<'POLICY'
+path "k8s/data/keycloak/realm-users" {
+  capabilities = ["create", "update", "patch"]
+}
+POLICY
+
+vault token create \
+  -policy=keycloak-kv-sync \
+  -orphan \
+  -explicit-max-ttl=8760h \
+  -ttl=8760h \
+  -display-name=keycloak-kv-sync
+```
+
+> **`explicit-max-ttl` vs `max_lease_ttl`:** The token auth mount has a
+> `max_lease_ttl` (default 768h / 32 days) that caps the initial TTL.
+> The `-explicit-max-ttl` flag sets the absolute maximum lifetime of the
+> token, up to which it can be renewed. The token must be renewed before
+> its current TTL expires. For example, with `-ttl=8760h` and a mount
+> `max_lease_ttl` of 768h, the token is created with a 768h TTL but can
+> be renewed repeatedly until the `explicit-max-ttl` of 8760h is reached.
+
+Adjust the policy path to match your `kv_mount_path` and `kv_secret_path`.
+
+## Multiple Keycloak contexts (untested)
+
+> **Untested:** multiple mount paths are expected to work based on how Vault
+> handles plugin mounts, but this has not been validated against multiple
+> Keycloak realms or deployments.
 
 The plugin stores one config per mount path. To manage multiple Keycloak
 deployments or realms, enable the plugin at multiple mount paths:
@@ -258,39 +359,15 @@ vault write keycloak-appA/config \
   url="https://keycloak.example.com" \
   realm="master" \
   target_realm="appA" \
-  username="admin" \
-  password='<appA-admin-password>'
+  master_admin_username="admin" \
+  master_admin_password='<appA-admin-password>'
 
 vault write keycloak-appB/config \
   url="https://keycloak-b.example.com" \
   realm="master" \
   target_realm="appB" \
-  username="admin" \
-  password='<appB-admin-password>'
-```
-
-Script example to configure any mount/context:
-
-```bash
-configure_keycloak_mount() {
-  local mount_path="$1"
-  local url="$2"
-  local realm="$3"
-  local target_realm="$4"
-  local username="$5"
-  local password="$6"
-
-  vault secrets enable -path="$mount_path" vault-plugin-secrets-keycloak 2>/dev/null || true
-  vault write "$mount_path/config" \
-    url="$url" \
-    realm="$realm" \
-    target_realm="$target_realm" \
-    username="$username" \
-    password="$password"
-}
-
-configure_keycloak_mount keycloak-appA "https://keycloak.example.com" master appA admin '<appA-admin-password>'
-configure_keycloak_mount keycloak-appB "https://keycloak-b.example.com" master appB admin '<appB-admin-password>'
+  master_admin_username="admin" \
+  master_admin_password='<appB-admin-password>'
 ```
 
 ## Expected logs
@@ -313,6 +390,7 @@ Operational/healthy examples:
 - `keycloak secrets engine loaded successfully`
 - `keycloak config saved and connection test succeeded`
 - `password rotated successfully` with fields such as `role` and `keycloak_username`
+- `kv secret updated successfully` with fields such as `kv_secret_path` and `kv_password_key`
 
 Error examples:
 
@@ -320,6 +398,7 @@ Error examples:
 - `failed to create Keycloak client`
 - `keycloak config saved but connection test failed`
 - `failed to rotate password`
+- `kv sync failed after password rotation`
 
 ## API reference
 
@@ -341,23 +420,28 @@ via the Resource Owner Password Credentials (ROPC) grant.
 | Parameter | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `url` | string | yes | — | Base URL of the Keycloak server. |
-| `realm` | string | yes | — | Auth realm used to obtain admin tokens (typically `master`). |
+| `realm` | string | no | `master` | Auth realm used to obtain admin tokens. |
 | `target_realm` | string | no | value of `realm` | Realm whose users will be managed. |
 | `client_id` | string | no | `admin-cli` | OIDC client used for the ROPC grant. |
-| `username` | string | yes | — | Keycloak admin username. |
-| `password` | string | yes | — | Password for the admin user. |
+| `master_admin_username` | string | yes | — | Username of the master realm admin. |
+| `master_admin_password` | string | yes | — | Password of the master realm admin. |
+| `kv_mount_path` | string | no | — | KV v2 mount name for KV sync after rotation. |
+| `kv_secret_path` | string | no | — | Path within the KV v2 mount to PATCH. |
+| `kv_api_addr` | string | no | `https://127.0.0.1:8200` | Vault API address for KV sync requests. |
+| `kv_tls_skip_verify` | bool | no | `false` | Skip TLS verification for the KV API. |
+| `kv_token` | string | no | — | Vault token with create/update/patch on the KV data path. |
 
-### `role/<name>`
+### `roles/<name>`
 
 Map a Vault role name to a Keycloak username. Used by the alpha
 `creds/<name>` lease-based path.
 
 | Method | Vault CLI |
 | --- | --- |
-| Create / Update | `vault write keycloak/role/<name> ...` |
-| Read | `vault read keycloak/role/<name>` |
-| Delete | `vault delete keycloak/role/<name>` |
-| List | `vault list keycloak/role` |
+| Create / Update | `vault write keycloak/roles/<name> ...` |
+| Read | `vault read keycloak/roles/<name>` |
+| Delete | `vault delete keycloak/roles/<name>` |
+| List | `vault list keycloak/roles` |
 
 **Parameters:**
 
@@ -367,6 +451,7 @@ Map a Vault role name to a Keycloak username. Used by the alpha
 | `keycloak_username` | string | yes | — | Keycloak username whose password will be rotated. |
 | `ttl` | duration | no | `3600` (1 h) | Lease duration before automatic revocation. |
 | `max_ttl` | duration | no | `86400` (24 h) | Maximum lease duration. |
+| `kv_password_key` | string | no | — | KV v2 key to PATCH with the new password after rotation via `creds/<role>`. |
 
 ### `users/`
 
@@ -394,6 +479,12 @@ first name, and last name.
 Generates a cryptographically random password (`crypto/rand`), sets it on
 the Keycloak user via the Admin REST API, and returns `{ username, password }`.
 The previous password is immediately invalidated. No lease is created.
+
+**Optional parameter:**
+
+| Parameter | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `kv_password_key` | string | no | — | KV v2 key to PATCH with the new password. Omit to skip KV sync. |
 
 ### `creds/<name>` (alpha)
 
