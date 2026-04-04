@@ -4,7 +4,12 @@
   "packages": {
     ".": {
       "changelog-path": "CHANGELOG.md",
-      "version-file": "version.go"
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "version.go"
+        }
+      ]
     }
   }
 }
