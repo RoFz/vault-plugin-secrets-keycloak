@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/RoFz/vault-plugin-secrets-keycloak/compare/v0.1.0...v0.1.1) (2026-04-04)
+
+
+### Bug Fixes
+
+* use generic updater for version.go with v prefix ([9f3b699](https://github.com/RoFz/vault-plugin-secrets-keycloak/commit/9f3b6991f13b51058b0e3e28fe70c3e3ac9fb2a4))
+
 ## 0.1.0 (2026-04-03)
 
 
