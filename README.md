@@ -196,6 +196,18 @@ Compute SHA256 from inside the pod (used for plugin registration):
 kubectl exec -n vault vault-0 -- sha256sum /vault/plugins/vault-plugin-secrets-keycloak
 ```
 
+In an HA cluster with a shared plugin volume, verify all Vault server pods see
+the same binary:
+
+```bash
+for pod in $(kubectl get pods -n vault -l component=server -o name); do
+  echo "$pod:"
+  kubectl exec -n vault "$pod" -- sha256sum /vault/plugins/vault-plugin-secrets-keycloak
+done
+```
+
+All SHA256 values must match before proceeding.
+
 #### Register and enable
 
 Register and enable the plugin:
