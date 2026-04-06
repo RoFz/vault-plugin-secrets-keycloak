@@ -8,11 +8,10 @@
 [![License](https://img.shields.io/github/license/RoFz/vault-plugin-secrets-keycloak)](LICENSE)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12363/badge)](https://www.bestpractices.dev/projects/12363)
 
-A HashiCorp Vault secrets engine plugin for Keycloak. Performs on-demand,
-audit-logged user password rotation via the Keycloak Admin REST API. Each
-rotation generates a cryptographically random password, sets it on the
-Keycloak account, and returns the new value — with no credential stored
-inside Vault.
+A HashiCorp Vault secrets engine plugin for Keycloak. Manages Keycloak user
+passwords via the Admin REST API: on-demand rotation, lease-bound ephemeral
+credentials, and background autorotation on a configurable schedule — all
+audit-logged through Vault.
 
 ## Contents
 
@@ -42,8 +41,12 @@ inside Vault.
     - [`users/`](#users)
     - [`users/<username>`](#usersusername)
     - [`users/<username>/rotate`](#usersusernamerotate)
-    - [`creds/<name>` (alpha)](#credsname-alpha)
+    - [`static-creds/<name>`](#static-credsname)
+    - [`creds/<name>`](#credsname)
   - [Usage](#usage)
+    - [Create and use a static role](#create-and-use-a-static-role)
+    - [Create and use an ephemeral role](#create-and-use-an-ephemeral-role)
+    - [Rotate on demand](#rotate-on-demand)
   - [Credential lifecycle](#credential-lifecycle)
   - [Contributing](#contributing)
   - [Security](#security)
@@ -57,45 +60,73 @@ This plugin mounts as a Vault secrets engine and provides endpoints to:
 - **Rotate a user password on demand** via `users/<username>/rotate`
   (fire-and-forget — no lease, no expiration). The new password is
   returned to the caller and remains valid in Keycloak until the next
-  explicit rotation.
+  rotation.
+- **Autorotate passwords on a schedule** via static roles (v0.3.0+).
+  A background task rotates the password every `rotation_period` and
+  stores the current credential in Vault. Read it any time from
+  `static-creds/<role>` — always the same value until the next rotation.
 - **Sync rotated passwords to a KV v2 secret** (v0.2.0+) — optionally
-  PATCH the new password into another Vault KV v2 path after rotation
+  PATCH the new password into another Vault KV v2 path after any rotation
   (useful for Kubernetes secret operators).
-- **Issue ephemeral, lease-bound credentials** via `creds/<role>`
-  (alpha). The password is returned with a Vault lease; on lease expiry
-  or explicit revocation, the plugin resets the Keycloak password to a
-  random discarded value, invalidating both sides.
+- **Issue ephemeral, lease-bound credentials** via `creds/<role>`.
+  Each read generates a **new** password immediately set on the Keycloak
+  account. The credential carries a Vault lease; on expiry or explicit
+  revocation, the plugin resets the password to a discarded value.
 
 ## What this plugin does not do
 
 - **Create or delete Keycloak users.** The plugin only manages passwords
   for existing users.
-- **Auto-rotate passwords on a schedule.** There is no background task
-  or periodic rotation. All rotations are triggered by an explicit API
-  call.
-- **Store passwords inside Vault.** Rotated passwords are returned to
-  the caller and (optionally) synced to a KV v2 path, but the plugin
-  itself retains no record of them.
+- **Store passwords for ephemeral roles.** Ephemeral credentials issued
+  via `creds/<role>` are returned to the caller only and are not retained
+  inside Vault after the response.
 
 ## Process flow
 
+### Static role (autorotation)
+
 ```mermaid
 flowchart TD
-  A[Operator calls Vault path] --> B{Path}
-  B -->|keycloak/config| C[Store config in Vault storage]
-  C --> D[Test Keycloak connection via admin token]
-  B -->|keycloak/roles/name| E[Store role → keycloak_username mapping]
-  B -->|keycloak/creds/role| F[Load role and config]
-  F --> G[Generate random password]
-  G --> H[Call Keycloak Admin API reset-password]
-  H --> I{KV sync configured?}
-  I -->|yes| I2[PATCH password into KV v2 secret]
-  I2 --> I3[Return username and new password]
-  I -->|no| I3
-  B -->|keycloak/users| J[List users in target realm]
-  B -->|keycloak/users/username| K[Read user details]
-  B -->|keycloak/users/username/rotate| L[Generate password + reset in Keycloak]
-  L --> M[Return username and new password]
+  A[Vault background tick ~1 min] --> B[List all roles]
+  B --> C{For each non-ephemeral role}
+  C -->|rotation overdue| D[Generate random password]
+  D --> E[Call Keycloak Admin API reset-password]
+  E --> F[Store password in Vault storage]
+  F --> G{KV sync configured?}
+  G -->|yes| H[PATCH password into KV v2 secret]
+  G -->|no| I[Done]
+  H --> I
+  C -->|not yet due| I
+
+  J[Operator reads static-creds/role] --> K[Load stored credential]
+  K --> L[Return username + password + last_rotation]
+```
+
+### Ephemeral role
+
+```mermaid
+flowchart TD
+  A[Operator reads creds/role] --> B[Load role and config]
+  B --> C[Generate random password]
+  C --> D[Call Keycloak Admin API reset-password]
+  D --> E{KV sync configured?}
+  E -->|yes| F[PATCH password into KV v2 secret]
+  E -->|no| G[Return username + password + Vault lease]
+  F --> G
+  G -->|lease expires / revoke| H[Rotate to discarded password]
+```
+
+### On-demand rotation
+
+```mermaid
+flowchart TD
+  A[Operator calls users/username/rotate] --> B[Generate random password]
+  B --> C[Call Keycloak Admin API reset-password]
+  C --> D[Reset autorotation timer for any static roles on this username]
+  D --> E{KV sync configured?}
+  E -->|yes| F[PATCH password into KV v2 secret]
+  E -->|no| G[Return username + password]
+  F --> G
 ```
 
 ## Compatibility
@@ -313,10 +344,11 @@ vault write keycloak/config \
 
 ### KV v2 sync (optional)
 
-When a password is rotated via `creds/<role>` or `users/<username>/rotate`,
-the plugin can optionally PATCH the new password into a KV v2 secret in
-Vault. This is useful for syncing rotated credentials to Kubernetes secrets
-(via the Vault Secrets Operator or External Secrets Operator).
+When a password is rotated — via `static-creds` autorotation,
+`creds/<role>`, or `users/<username>/rotate` — the plugin can optionally
+PATCH the new password into a KV v2 secret in Vault. This is useful for
+syncing rotated credentials to Kubernetes secrets (via the Vault Secrets
+Operator or External Secrets Operator).
 
 To enable KV sync, add the KV fields to the config:
 
@@ -331,23 +363,18 @@ vault write keycloak/config \
   kv_api_addr="https://vault.vault.svc.cluster.local:8200"
 ```
 
-Then set `kv_password_key` on each role:
+Then set `kv_password_key` on the role:
 
 ```bash
 vault write keycloak/roles/myuser \
   keycloak_username="myuser" \
+  rotation_period="24h" \
   kv_password_key="myuser-password"
 ```
 
-After each `vault read keycloak/creds/myuser`, the plugin PATCHes
-`k8s/data/keycloak/realm-users` with `{ "myuser-password": "<new-pw>" }`.
-If the KV secret does not yet exist, a PUT (create) is used instead.
-
-For ad-hoc rotations via the users path, pass it as a parameter:
-
-```bash
-vault write keycloak/users/myuser/rotate kv_password_key="myuser-password"
-```
+After each rotation, the plugin PATCHes `k8s/data/keycloak/realm-users`
+with `{ "myuser-password": "<new-pw>" }`. If the KV secret does not yet
+exist, a PUT (create) is used instead.
 
 KV sync failures are non-fatal — the rotation still succeeds and a warning
 is returned in the response.
@@ -422,7 +449,7 @@ Filter only plugin-relevant messages:
 
 ```bash
 kubectl logs -n vault vault-0 --tail=500 \
-  | grep -E 'keycloak|password rotated|failed to create Keycloak client|connection test failed|failed to initialise'
+  | grep -E 'keycloak|password rotated|static credential rotated|failed to create Keycloak client|connection test failed|failed to initialise'
 ```
 
 Operational/healthy examples:
@@ -430,6 +457,8 @@ Operational/healthy examples:
 - `keycloak secrets engine loaded successfully`
 - `keycloak config saved and connection test succeeded`
 - `password rotated successfully` with fields such as `role` and `keycloak_username`
+- `static credential rotated` with fields such as `role` and `keycloak_username`
+- `static cred timer reset after manual rotation` with fields such as `role` and `keycloak_username`
 - `kv secret updated successfully` with fields such as `kv_secret_path` and `kv_password_key`
 
 Error examples:
@@ -438,6 +467,7 @@ Error examples:
 - `failed to create Keycloak client`
 - `keycloak config saved but connection test failed`
 - `failed to rotate password`
+- `periodic: rotation failed` with fields such as `role` and `error`
 - `kv sync failed after password rotation`
 
 ## API reference
@@ -473,8 +503,9 @@ via the Resource Owner Password Credentials (ROPC) grant.
 
 ### `roles/<name>`
 
-Map a Vault role name to a Keycloak username. Used by the alpha
-`creds/<name>` lease-based path.
+Map a Vault role name to a Keycloak username. A role is either **static**
+(autorotated, default) or **ephemeral** (lease-bound). The mode is set once
+by the `ephemeral` flag and cannot be mixed.
 
 | Method | Vault CLI |
 | --- | --- |
@@ -487,11 +518,33 @@ Map a Vault role name to a Keycloak username. Used by the alpha
 
 | Parameter | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `name` | string | yes | — | Vault role name. |
+| `name` | string | yes | — | Vault role name (lowercase). |
 | `keycloak_username` | string | yes | — | Keycloak username whose password will be rotated. |
-| `ttl` | duration | no | `3600` (1 h) | Lease duration before automatic revocation. |
-| `max_ttl` | duration | no | `86400` (24 h) | Maximum lease duration. |
-| `kv_password_key` | string | no | — | KV v2 key to PATCH with the new password after rotation via `creds/<role>`. |
+| `ephemeral` | bool | no | `false` | Role mode. `false` = static autorotation; `true` = ephemeral lease-bound. |
+| `rotation_period` | duration | static only | — | How often to autorotate. Minimum 30 minutes. Required when `ephemeral=false`. |
+| `ttl` | duration | ephemeral only | — | Lease duration. Minimum 1 minute. Required when `ephemeral=true`. |
+| `max_ttl` | duration | ephemeral only | — | Maximum lease duration. Must be ≥ `ttl`. Required when `ephemeral=true`. |
+| `kv_password_key` | string | no | — | KV v2 key to PATCH with the new password after each rotation. |
+
+**Validation rules:**
+
+| Condition | Result |
+| --- | --- |
+| `ephemeral=false` and `rotation_period` missing or < 30 min | Error |
+| `ephemeral=false` and `ttl` or `max_ttl` provided | Error |
+| `ephemeral=true` and `ttl` missing or < 1 min | Error |
+| `ephemeral=true` and `max_ttl` missing | Error |
+| `ephemeral=true` and `max_ttl` < `ttl` | Error |
+| `ephemeral=true` and `rotation_period` provided | Error |
+
+**On static role creation:** the plugin immediately performs one rotation so
+`static-creds/<name>` is readable straight away. If Keycloak is unreachable
+at that moment, role creation fails and the role is not stored.
+
+**Backward compatibility:** roles written by v0.1.x / v0.2.0 (which have
+`ttl`/`max_ttl` but no `ephemeral` or `rotation_period` field) are
+automatically treated as `ephemeral=true` and continue to work with
+`creds/<name>` unchanged.
 
 ### `users/`
 
@@ -516,9 +569,13 @@ first name, and last name.
 | --- | --- |
 | Update | `vault write -force keycloak/users/<username>/rotate` |
 
-Generates a cryptographically random password (`crypto/rand`), sets it on
-the Keycloak user via the Admin REST API, and returns `{ username, password }`.
-The previous password is immediately invalidated. No lease is created.
+Generates a cryptographically random password, sets it on the Keycloak user
+via the Admin REST API, and returns `{ username, password }`. The previous
+password is immediately invalidated. No lease is created.
+
+If any static roles map to this username, their stored credential and
+autorotation timer are updated to match the new password, so the next
+autorotation is deferred by a full `rotation_period` from now.
 
 **Optional parameter:**
 
@@ -526,16 +583,42 @@ The previous password is immediately invalidated. No lease is created.
 | --- | --- | --- | --- | --- |
 | `kv_password_key` | string | no | — | KV v2 key to PATCH with the new password. Omit to skip KV sync. |
 
-### `creds/<name>` (alpha)
+### `static-creds/<name>`
+
+| Method | Vault CLI |
+| --- | --- |
+| Read | `vault read keycloak/static-creds/<name>` |
+
+Returns the current autorotated password for a **static** (non-ephemeral) role.
+No lease is created — multiple reads return the same credential until the next
+rotation. The password is stored in Vault's encrypted storage (seal-wrapped on
+Enterprise).
+
+Returns an error if the role is ephemeral (use `creds/<name>` instead) or if
+no credential has been stored yet (rotation pending).
+
+**Response fields:**
+
+| Field | Description |
+| --- | --- |
+| `username` | Keycloak username. |
+| `password` | Current password. Valid until the next rotation. |
+| `last_rotation` | RFC 3339 timestamp of the most recent rotation. |
+| `rotation_period` | Configured rotation interval in seconds. |
+
+### `creds/<name>`
 
 | Method | Vault CLI |
 | --- | --- |
 | Read | `vault read keycloak/creds/<name>` |
 
-Generates a password and sets it on the Keycloak user bound to `<name>`.
-Returns `{ username, password }` with a Vault lease. On lease revocation the
-password is rotated again to a discarded value, invalidating the issued
-credential. On lease renewal the TTL is extended without rotation.
+Generates a **new** password and immediately sets it on the Keycloak user
+bound to the role. Returns `{ username, password }` with a Vault lease. Each
+read invalidates the previous password. On lease expiry or explicit
+revocation, the password is rotated again to a discarded value.
+
+Only works with **ephemeral** roles (`ephemeral=true`). Returns an error for
+static roles (use `static-creds/<name>` instead).
 
 > **Alpha:** the revoke/renew logic is unit-tested, but automatic lease expiry
 > and revocation have not been validated end-to-end against a live Vault lease.
@@ -555,42 +638,102 @@ Read a specific user's details:
 vault read keycloak/users/<keycloak-username>
 ```
 
-Rotate a user's password and return the new value:
+### Create and use a static role
+
+Create a static role — Keycloak is contacted immediately for the first rotation:
+
+```bash
+vault write keycloak/roles/myapp \
+  keycloak_username="myapp-svc" \
+  rotation_period="24h"
+```
+
+Read the current password (same value on every read until the next rotation):
+
+```bash
+vault read keycloak/static-creds/myapp
+```
+
+Example output:
+
+```text
+Key               Value
+---               -----
+username          myapp-svc
+password          dGhpcyBpcyBhIHRlc3Q...
+last_rotation     2026-04-01T12:00:00Z
+rotation_period   86400
+```
+
+### Create and use an ephemeral role
+
+Create an ephemeral role:
+
+```bash
+vault write keycloak/roles/myapp-ephem \
+  keycloak_username="myapp-svc" \
+  ephemeral=true \
+  ttl="1h" \
+  max_ttl="24h"
+```
+
+Each read generates a **new** password and invalidates the previous one:
+
+```bash
+vault read keycloak/creds/myapp-ephem
+```
+
+### Rotate on demand
+
+Rotate a user's password outside of any role:
 
 ```bash
 vault write -force keycloak/users/<keycloak-username>/rotate
 ```
 
-The command generates a cryptographically random password (`crypto/rand`),
-sets it on the Keycloak account via the Admin REST API, and returns
-`{ username, password }`. The previous password is immediately invalidated.
-No lease is created; Vault retains no record of the issued credential.
-
 ## Credential lifecycle
 
-The supported rotation path is fire-and-forget via
-`vault write -force keycloak/users/<username>/rotate`.
+### Static roles (autorotation)
 
-The returned password remains valid in Keycloak indefinitely until the next
-explicit rotation call. Vault retains no record of it and performs no
-automatic revocation. Every call is recorded in the Vault audit log
-(caller identity, mount path, timestamp).
+The plugin's background task runs on Vault's periodic tick (~1 minute). For
+each static role it checks whether `time.since(last_rotation) >= rotation_period`.
+If so, it:
+
+1. Generates a new random password (`crypto/rand`).
+2. Sets it on the Keycloak user via the Admin REST API.
+3. Stores the new password and timestamp in Vault's encrypted storage.
+4. Optionally PATCHes the KV v2 secret.
+
+If Vault was down and a rotation became overdue, it is performed immediately
+on the next tick (catch-up logic).
+
+Calling `users/<username>/rotate` on a username that belongs to one or more
+static roles resets those roles' autorotation timers to now, so the next
+scheduled rotation is deferred by a full `rotation_period`.
+
+### Ephemeral roles
+
+Each `vault read keycloak/creds/<name>` generates a new password immediately,
+replacing any previously issued credential for that user. The credential is
+returned with a Vault lease; on expiry or explicit revocation, the password is
+rotated to a discarded value, invalidating it on both sides.
 
 > **Alpha — not recommended for production use yet:**
-> The plugin also implements a role-based, lease-bound issuance path
-> (`vault read keycloak/creds/<role>`) where Vault manages a TTL and
-> automatically invalidates the credential on expiry by re-rotating the
-> password to a discarded value. The revoke/renew callbacks are unit-tested,
-> but automatic lease expiry and revocation have not been validated end-to-end
-> against a live Vault lease, and are considered alpha.
-> See `path_credentials.go` in the source for implementation details.
+> The revoke/renew callbacks are unit-tested, but automatic lease expiry and
+> revocation have not been validated end-to-end against a live Vault lease.
 >
 > **Alpha caveat — Vault availability at revocation time:**
 > Keycloak has no awareness of Vault leases. If Vault is unavailable when a
 > lease TTL expires, the revocation callback is deferred and the issued
-> password remains valid in Keycloak until Vault resumes. This is a known
-> limitation of the alpha lease path and does not affect the supported
-> fire-and-forget rotation path.
+> password remains valid in Keycloak until Vault resumes. This does not affect
+> the static autorotation or fire-and-forget rotation paths.
+
+### Fire-and-forget rotation
+
+`vault write -force keycloak/users/<username>/rotate` is a stateless,
+one-shot rotation. The returned password remains valid in Keycloak until
+the next explicit call. Vault retains no record of it. Every call is recorded
+in the Vault audit log (caller identity, mount path, timestamp).
 
 ## Contributing
 

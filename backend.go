@@ -25,7 +25,7 @@ func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend,
 type keycloakBackend struct {
 	*framework.Backend
 	lock   sync.RWMutex
-	client *keycloakClient
+	client keycloakClientIface
 }
 
 // backend configures the Vault plugin backend with all paths and secrets.
@@ -40,6 +40,7 @@ func backend() *keycloakBackend {
 			SealWrapStorage: []string{
 				"config",
 				"roles/*",
+				"static-creds/*",
 			},
 		},
 		Paths: framework.PathAppend(
@@ -47,10 +48,12 @@ func backend() *keycloakBackend {
 			pathRole(&b),
 			pathUsers(&b),
 			[]*framework.Path{pathCredentials(&b)},
+			[]*framework.Path{pathStaticCreds(&b)},
 		),
-		Secrets:     []*framework.Secret{keycloakSecret(&b)},
-		BackendType: logical.TypeLogical,
-		Invalidate:  b.invalidate,
+		Secrets:      []*framework.Secret{keycloakSecret(&b)},
+		BackendType:  logical.TypeLogical,
+		Invalidate:   b.invalidate,
+		PeriodicFunc: b.periodicFunc,
 	}
 	return &b
 }
@@ -70,7 +73,7 @@ func (b *keycloakBackend) invalidate(ctx context.Context, key string) {
 }
 
 // getClient returns a cached Keycloak client or creates a new one from stored config.
-func (b *keycloakBackend) getClient(ctx context.Context, s logical.Storage) (*keycloakClient, error) {
+func (b *keycloakBackend) getClient(ctx context.Context, s logical.Storage) (keycloakClientIface, error) {
 	b.lock.RLock()
 	unlockFunc := b.lock.RUnlock
 	defer func() { unlockFunc() }()

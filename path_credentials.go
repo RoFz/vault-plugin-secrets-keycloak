@@ -44,6 +44,9 @@ func (b *keycloakBackend) pathCredentialsRead(ctx context.Context, req *logical.
 	if role == nil {
 		return logical.ErrorResponse("role %q not found", roleName), nil
 	}
+	if !role.Ephemeral {
+		return logical.ErrorResponse("role %q is not ephemeral; use static-creds/%s", roleName, roleName), nil
+	}
 
 	client, err := b.getClient(ctx, req.Storage)
 	if err != nil {

@@ -12,8 +12,10 @@ import (
 // keycloakRoleEntry maps a Vault role name to a Keycloak username.
 type keycloakRoleEntry struct {
 	KeycloakUsername string        `json:"keycloak_username"`
+	Ephemeral        bool          `json:"ephemeral"`
 	TTL              time.Duration `json:"ttl"`
 	MaxTTL           time.Duration `json:"max_ttl"`
+	RotationPeriod   time.Duration `json:"rotation_period"`
 	KVPasswordKey    string        `json:"kv_password_key"`
 }
 
@@ -21,8 +23,10 @@ type keycloakRoleEntry struct {
 func (r *keycloakRoleEntry) toResponseData() map[string]interface{} {
 	return map[string]interface{}{
 		"keycloak_username": r.KeycloakUsername,
+		"ephemeral":         r.Ephemeral,
 		"ttl":               r.TTL.Seconds(),
 		"max_ttl":           r.MaxTTL.Seconds(),
+		"rotation_period":   r.RotationPeriod.Seconds(),
 		"kv_password_key":   r.KVPasswordKey,
 	}
 }
@@ -43,19 +47,26 @@ func pathRole(b *keycloakBackend) []*framework.Path {
 					Description: "Keycloak username whose password will be rotated when credentials are requested.",
 					Required:    true,
 				},
+				"ephemeral": {
+					Type:        framework.TypeBool,
+					Description: "If true, the role issues lease-bound ephemeral credentials via creds/<name>. If false (default), the role uses background autorotation and credentials are read from static-creds/<name>.",
+					Default:     false,
+				},
 				"ttl": {
 					Type:        framework.TypeDurationSecond,
-					Description: "Lease duration before the credential is automatically revoked. Defaults to 1 hour.",
-					Default:     3600,
+					Description: "Lease duration for ephemeral roles. Required when ephemeral=true; minimum 1 minute.",
 				},
 				"max_ttl": {
 					Type:        framework.TypeDurationSecond,
-					Description: "Maximum lease duration. Defaults to 24 hours.",
-					Default:     86400,
+					Description: "Maximum lease duration for ephemeral roles. Required when ephemeral=true; must be >= ttl.",
+				},
+				"rotation_period": {
+					Type:        framework.TypeDurationSecond,
+					Description: "How often to autorotate the password for static roles. Required when ephemeral=false; minimum 30 minutes.",
 				},
 				"kv_password_key": {
 					Type:        framework.TypeString,
-					Description: "KV v2 key to PATCH with the new password after rotation via creds/<role>. Optional.",
+					Description: "KV v2 key to PATCH with the new password after rotation. Optional.",
 					Required:    false,
 				},
 			},
@@ -131,20 +142,71 @@ func (b *keycloakBackend) pathRoleWrite(ctx context.Context, req *logical.Reques
 		return logical.ErrorResponse("keycloak_username is required"), nil
 	}
 
-	if v, ok := data.GetOk("ttl"); ok {
-		role.TTL = time.Duration(v.(int)) * time.Second
+	if v, ok := data.GetOk("ephemeral"); ok {
+		role.Ephemeral = v.(bool)
 	}
-	if v, ok := data.GetOk("max_ttl"); ok {
-		role.MaxTTL = time.Duration(v.(int)) * time.Second
+
+	if role.Ephemeral {
+		// Ephemeral mode: ttl and max_ttl required, rotation_period rejected.
+		if v, ok := data.GetOk("rotation_period"); ok && v.(int) != 0 {
+			return logical.ErrorResponse("rotation_period is not allowed for ephemeral roles; use ttl and max_ttl instead"), nil
+		}
+		if v, ok := data.GetOk("ttl"); ok {
+			role.TTL = time.Duration(v.(int)) * time.Second
+		}
+		if role.TTL < 60*time.Second {
+			return logical.ErrorResponse("ttl is required for ephemeral roles and must be at least 1 minute (60s)"), nil
+		}
+		if v, ok := data.GetOk("max_ttl"); ok {
+			role.MaxTTL = time.Duration(v.(int)) * time.Second
+		}
+		if role.MaxTTL == 0 {
+			return logical.ErrorResponse("max_ttl is required for ephemeral roles"), nil
+		}
+		if role.MaxTTL < role.TTL {
+			return logical.ErrorResponse("max_ttl must be greater than or equal to ttl"), nil
+		}
+	} else {
+		// Static (non-ephemeral) mode: rotation_period required, ttl/max_ttl rejected.
+		if v, ok := data.GetOk("ttl"); ok && v.(int) != 0 {
+			return logical.ErrorResponse("ttl is not allowed for static roles; use rotation_period instead"), nil
+		}
+		if v, ok := data.GetOk("max_ttl"); ok && v.(int) != 0 {
+			return logical.ErrorResponse("max_ttl is not allowed for static roles; use rotation_period instead"), nil
+		}
+		if v, ok := data.GetOk("rotation_period"); ok {
+			role.RotationPeriod = time.Duration(v.(int)) * time.Second
+		}
+		if role.RotationPeriod < 30*time.Minute {
+			return logical.ErrorResponse("rotation_period is required for static roles and must be at least 30 minutes (1800s)"), nil
+		}
 	}
-	if role.MaxTTL > 0 && role.TTL > role.MaxTTL {
-		return logical.ErrorResponse("ttl cannot exceed max_ttl"), nil
-	}
+
 	if v, ok := data.GetOk("kv_password_key"); ok {
 		role.KVPasswordKey = v.(string)
 	}
 
-	return nil, b.setRole(ctx, req.Storage, name, role)
+	if err := b.setRole(ctx, req.Storage, name, role); err != nil {
+		return nil, err
+	}
+
+	// For new or newly-static roles, perform an immediate first rotation so
+	// static-creds/<name> is readable right away.
+	if !role.Ephemeral {
+		existingCred, err := getStaticCred(ctx, req.Storage, name)
+		if err != nil {
+			return nil, err
+		}
+		if existingCred == nil {
+			if rotErr := b.rotateStaticCred(ctx, req.Storage, name, role); rotErr != nil {
+				// Role is saved; undo it to avoid a non-functional static role.
+				_ = req.Storage.Delete(ctx, "roles/"+name)
+				return nil, fmt.Errorf("initial rotation failed: %w", rotErr)
+			}
+		}
+	}
+
+	return nil, nil
 }
 
 func (b *keycloakBackend) pathRoleDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
@@ -175,6 +237,14 @@ func (b *keycloakBackend) getRole(ctx context.Context, s logical.Storage, name s
 	if err := entry.DecodeJSON(&role); err != nil {
 		return nil, fmt.Errorf("error decoding role: %w", err)
 	}
+
+	// Backward compat: roles written by v0.1.x/v0.2.0 have ttl/max_ttl but no
+	// ephemeral field and no rotation_period.  Treat them as ephemeral=true so
+	// they continue to work with creds/<role> unchanged.
+	if !role.Ephemeral && role.RotationPeriod == 0 && (role.TTL > 0 || role.MaxTTL > 0) {
+		role.Ephemeral = true
+	}
+
 	return &role, nil
 }
 

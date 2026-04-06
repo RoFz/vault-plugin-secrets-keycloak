@@ -141,6 +141,15 @@ func (b *keycloakBackend) pathUsersRotate(ctx context.Context, req *logical.Requ
 		"keycloak_username", username,
 	)
 
+	// Update static-creds storage for any non-ephemeral roles that map to this
+	// username, resetting their autorotation timer.
+	if syncErr := b.syncStaticCredsForUsername(ctx, req.Storage, username, password); syncErr != nil {
+		b.Logger().Error("failed to sync static creds after manual rotation",
+			"keycloak_username", username,
+			"error", syncErr,
+		)
+	}
+
 	resp := &logical.Response{
 		Data: map[string]interface{}{
 			"username": username,

@@ -176,6 +176,7 @@ func TestRoleWriteRead(t *testing.T) {
 		Storage:   storage,
 		Data: map[string]interface{}{
 			"keycloak_username": "testuser",
+			"ephemeral":         true,
 			"ttl":               7200,
 			"max_ttl":           86400,
 		},
@@ -217,6 +218,9 @@ func TestRoleList(t *testing.T) {
 			Storage:   storage,
 			Data: map[string]interface{}{
 				"keycloak_username": name + "-user",
+				"ephemeral":         true,
+				"ttl":               3600,
+				"max_ttl":           86400,
 			},
 		}
 		if _, err := b.HandleRequest(ctx, req); err != nil {
@@ -252,6 +256,9 @@ func TestRoleDelete(t *testing.T) {
 		Storage:   storage,
 		Data: map[string]interface{}{
 			"keycloak_username": "someuser",
+			"ephemeral":         true,
+			"ttl":               3600,
+			"max_ttl":           86400,
 		},
 	}
 	if _, err := b.HandleRequest(ctx, req); err != nil {
@@ -333,6 +340,9 @@ func TestRoleWithKVPasswordKey(t *testing.T) {
 		Storage:   storage,
 		Data: map[string]interface{}{
 			"keycloak_username": "testuser",
+			"ephemeral":         true,
+			"ttl":               3600,
+			"max_ttl":           86400,
 			"kv_password_key":   "my-password-key",
 		},
 	}
@@ -422,5 +432,151 @@ func TestFactory(t *testing.T) {
 	}
 	if b == nil {
 		t.Fatal("Factory returned a nil backend")
+	}
+}
+
+// --- Role validation tests (v0.3.0) ---
+
+func writeRoleResp(t *testing.T, b *keycloakBackend, storage logical.Storage, data map[string]interface{}) *logical.Response {
+	t.Helper()
+	req := &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "roles/test",
+		Storage:   storage,
+		Data:      data,
+	}
+	resp, err := b.HandleRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("role write error: %v", err)
+	}
+	return resp
+}
+
+func TestStaticRoleMissingRotationPeriod(t *testing.T) {
+	b, storage := newTestBackend(t)
+	resp := writeRoleResp(t, b, storage, map[string]interface{}{
+		"keycloak_username": "bob",
+		// ephemeral=false (default), no rotation_period
+	})
+	if resp == nil || !resp.IsError() {
+		t.Fatal("expected error when ephemeral=false and rotation_period is missing")
+	}
+}
+
+func TestStaticRoleRotationPeriodTooShort(t *testing.T) {
+	b, storage := newTestBackend(t)
+	resp := writeRoleResp(t, b, storage, map[string]interface{}{
+		"keycloak_username": "bob",
+		"rotation_period":   60, // 1 minute — below the 30-minute minimum
+	})
+	if resp == nil || !resp.IsError() {
+		t.Fatal("expected error when rotation_period < 30 minutes")
+	}
+}
+
+func TestStaticRoleRejectsTTL(t *testing.T) {
+	b, storage := newTestBackend(t)
+	resp := writeRoleResp(t, b, storage, map[string]interface{}{
+		"keycloak_username": "bob",
+		"ttl":               3600,
+	})
+	if resp == nil || !resp.IsError() {
+		t.Fatal("expected error when ttl is set on a static role")
+	}
+}
+
+func TestStaticRoleRejectsMaxTTL(t *testing.T) {
+	b, storage := newTestBackend(t)
+	resp := writeRoleResp(t, b, storage, map[string]interface{}{
+		"keycloak_username": "bob",
+		"max_ttl":           86400,
+	})
+	if resp == nil || !resp.IsError() {
+		t.Fatal("expected error when max_ttl is set on a static role")
+	}
+}
+
+func TestEphemeralRoleMissingTTL(t *testing.T) {
+	b, storage := newTestBackend(t)
+	resp := writeRoleResp(t, b, storage, map[string]interface{}{
+		"keycloak_username": "bob",
+		"ephemeral":         true,
+		"max_ttl":           86400,
+		// ttl missing
+	})
+	if resp == nil || !resp.IsError() {
+		t.Fatal("expected error when ephemeral=true and ttl is missing")
+	}
+}
+
+func TestEphemeralRoleMissingMaxTTL(t *testing.T) {
+	b, storage := newTestBackend(t)
+	resp := writeRoleResp(t, b, storage, map[string]interface{}{
+		"keycloak_username": "bob",
+		"ephemeral":         true,
+		"ttl":               3600,
+		// max_ttl missing
+	})
+	if resp == nil || !resp.IsError() {
+		t.Fatal("expected error when ephemeral=true and max_ttl is missing")
+	}
+}
+
+func TestEphemeralRoleRejectsRotationPeriod(t *testing.T) {
+	b, storage := newTestBackend(t)
+	resp := writeRoleResp(t, b, storage, map[string]interface{}{
+		"keycloak_username": "bob",
+		"ephemeral":         true,
+		"ttl":               3600,
+		"max_ttl":           86400,
+		"rotation_period":   1800,
+	})
+	if resp == nil || !resp.IsError() {
+		t.Fatal("expected error when rotation_period is set on an ephemeral role")
+	}
+}
+
+func TestEphemeralRoleMaxTTLLessThanTTL(t *testing.T) {
+	b, storage := newTestBackend(t)
+	resp := writeRoleResp(t, b, storage, map[string]interface{}{
+		"keycloak_username": "bob",
+		"ephemeral":         true,
+		"ttl":               86400,
+		"max_ttl":           3600,
+	})
+	if resp == nil || !resp.IsError() {
+		t.Fatal("expected error when max_ttl < ttl on an ephemeral role")
+	}
+}
+
+func TestValidEphemeralRole(t *testing.T) {
+	b, storage := newTestBackend(t)
+	resp := writeRoleResp(t, b, storage, map[string]interface{}{
+		"keycloak_username": "bob",
+		"ephemeral":         true,
+		"ttl":               3600,
+		"max_ttl":           86400,
+	})
+	if resp != nil && resp.IsError() {
+		t.Fatalf("unexpected error for valid ephemeral role: %s", resp.Error())
+	}
+
+	req := &logical.Request{
+		Operation: logical.ReadOperation,
+		Path:      "roles/test",
+		Storage:   storage,
+	}
+	resp, err := b.HandleRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("role read error: %v", err)
+	}
+	if resp.Data["ephemeral"] != true {
+		t.Errorf("expected ephemeral=true, got %v", resp.Data["ephemeral"])
+	}
+	if resp.Data["ttl"] != float64(3600) {
+		t.Errorf("expected ttl=3600, got %v", resp.Data["ttl"])
+	}
+	if resp.Data["max_ttl"] != float64(86400) {
+		t.Errorf("expected max_ttl=86400, got %v", resp.Data["max_ttl"])
 	}
 }

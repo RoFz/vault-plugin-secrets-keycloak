@@ -11,10 +11,17 @@ import (
 	"github.com/hashicorp/vault/sdk/logical"
 )
 
-// writeRole stores a role mapping name -> keycloak_username, merging any extra fields.
+// writeRole stores an ephemeral role mapping name -> keycloak_username,
+// merging any extra fields. All creds-lifecycle tests exercise the ephemeral
+// lease path, so the role defaults to ephemeral=true with valid ttl bounds.
 func writeRole(t *testing.T, b *keycloakBackend, storage logical.Storage, name, username string, extra map[string]interface{}) {
 	t.Helper()
-	data := map[string]interface{}{"keycloak_username": username}
+	data := map[string]interface{}{
+		"keycloak_username": username,
+		"ephemeral":         true,
+		"ttl":               3600,
+		"max_ttl":           86400,
+	}
 	for k, v := range extra {
 		data[k] = v
 	}

@@ -21,6 +21,14 @@ type keycloakUserInfo struct {
 	LastName  string `json:"lastName,omitempty"`
 }
 
+// keycloakClientIface is the subset of keycloakClient used by the backend.
+// Tests can substitute a fake implementation.
+type keycloakClientIface interface {
+	ResetPassword(ctx context.Context, username, password string) error
+	ListUsers(ctx context.Context) ([]keycloakUserInfo, error)
+	GetUser(ctx context.Context, username string) (*keycloakUserInfo, error)
+}
+
 // keycloakClient holds configuration and an HTTP client for the Keycloak Admin REST API.
 type keycloakClient struct {
 	baseURL     string
