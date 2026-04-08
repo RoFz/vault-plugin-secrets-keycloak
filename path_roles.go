@@ -210,7 +210,11 @@ func (b *keycloakBackend) pathRoleWrite(ctx context.Context, req *logical.Reques
 }
 
 func (b *keycloakBackend) pathRoleDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	if err := req.Storage.Delete(ctx, "roles/"+data.Get("name").(string)); err != nil {
+	name := data.Get("name").(string)
+	if err := req.Storage.Delete(ctx, "roles/"+name); err != nil {
+		return nil, err
+	}
+	if err := req.Storage.Delete(ctx, "static-creds/"+name); err != nil {
 		return nil, err
 	}
 	return nil, nil
