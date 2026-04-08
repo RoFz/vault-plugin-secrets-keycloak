@@ -1,0 +1,5 @@
+testcontainers[vault,keycloak]>=4.10.0
+hvac>=2.3.0
+python-keycloak>=4.0.0
+pytest>=8.0.0
+pytest-timeout>=2.3.0
