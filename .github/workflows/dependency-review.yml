@@ -33,9 +33,18 @@ jobs:
 
       # Skip for fork PRs — GITHUB_TOKEN is read-only there and cannot submit
       # snapshots to the base repo. dependency-review still runs below.
-      - name: Submit dependency snapshot
+      - name: Submit Go dependency snapshot
         if: github.event.pull_request.head.repo.fork == false
         uses: actions/go-dependency-submission@f35d5c9af13ce9cc32f7930b171e315e878f6921 # v2.0.3
+
+      # Submit Python (pip) dependencies from tests/requirements.txt so that
+      # dependency-review can resolve their licenses. Pip detection is
+      # experimental in component-detection and must be opted in explicitly.
+      - name: Submit Python dependency snapshot
+        if: github.event.pull_request.head.repo.fork == false
+        uses: advanced-security/component-detection-dependency-submission-action@9c110eb34dee187cd9eca76a652b9f6a0ed22927 # v0.1.1
+        with:
+          detectorArgs: Pip=EnableIfDefaultOff
 
   dependency-review:
     name: Dependency Review
