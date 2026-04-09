@@ -70,6 +70,7 @@ func TestConfigWriteRead(t *testing.T) {
 	}
 	if resp == nil {
 		t.Fatal("config read returned nil response")
+		return
 	}
 
 	if resp.Data["url"] != "https://keycloak.example.com" {
@@ -198,6 +199,7 @@ func TestRoleWriteRead(t *testing.T) {
 	}
 	if resp == nil {
 		t.Fatal("role read returned nil response")
+		return
 	}
 	if resp.Data["keycloak_username"] != "testuser" {
 		t.Errorf("expected keycloak_username 'testuser', got %v", resp.Data["keycloak_username"])
@@ -353,6 +355,7 @@ func TestRoleWithKVPasswordKey(t *testing.T) {
 	}
 	if resp == nil {
 		t.Fatal("role read returned nil response")
+		return
 	}
 	if resp.Data["kv_password_key"] != "my-password-key" {
 		t.Errorf("expected kv_password_key 'my-password-key', got %v", resp.Data["kv_password_key"])
