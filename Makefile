@@ -1,4 +1,4 @@
-.PHONY: build build-test-binary test-unit test-integration clean
+.PHONY: build build-test-binary test-unit test-integration lint check-deps pre-push all clean
 
 BINARY_NAME := vault-plugin-secrets-keycloak
 BIN_DIR     := bin
@@ -29,7 +29,25 @@ test-unit:
 	go test -race ./...
 
 test-integration: build-test-binary
-	pytest tests/integration/ -v --timeout=120
+	TESTCONTAINERS_RYUK_DISABLED=true pytest tests/integration/ -v --timeout=120
+
+# Fast checks — run after any Go source change.
+lint:
+	go vet ./...
+	go run mvdan.cc/gofumpt@v0.9.2 -l .
+	golangci-lint run ./...
+
+# Slow checks — run only when go.mod or go.sum changes.
+check-deps:
+	go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+	go run github.com/google/go-licenses@latest report ./...
+
+# Run all fast checks + unit tests before pushing.
+# Run make test-integration separately when plugin behavior changes.
+pre-push: lint test-unit check-deps
+
+# Run everything including integration tests (requires Docker).
+all: lint test-unit check-deps test-integration
 
 clean:
 	rm -rf $(BIN_DIR)/
