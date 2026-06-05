@@ -7,6 +7,10 @@ on:
 
 permissions: read-all
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Run dependency submission first so the snapshot for the PR head SHA is
   # available before the review action queries it. This follows the official
