@@ -5,7 +5,8 @@ updates:
     schedule:
       interval: 'weekly'
       day: 'monday'
-      cooldown-days: 7
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: 'fix'
     groups:
@@ -19,7 +20,8 @@ updates:
     schedule:
       interval: 'weekly'
       day: 'monday'
-      cooldown-days: 7
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: 'ci'
     groups:
