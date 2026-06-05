@@ -1,0 +1,6 @@
+rules:
+  # The goreleaser job only runs when releases_created = true (on release merges to main,
+  # never on PRs), so a PR contributor cannot trigger goreleaser or poison its cache.
+  cache-poisoning:
+    ignore:
+      - release-please.yml
