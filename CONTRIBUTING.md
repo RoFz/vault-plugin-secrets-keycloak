@@ -19,7 +19,7 @@ See [SECURITY.md](SECURITY.md) for the responsible disclosure process.
 
 The repository ships a [VS Code dev container](.devcontainer/devcontainer.json)
 that pre-installs all required tools: Go, golangci-lint, gofumpt, govulncheck,
-pre-commit, and pip-tools. Open the repo in VS Code and accept the
+go-licenses, pre-commit, and pip-tools. Open the repo in VS Code and accept the
 "Reopen in Container" prompt, or use the Dev Containers CLI:
 
 ```sh
@@ -94,9 +94,9 @@ Format: `<type>[optional scope]: <description>`
 | Prefix | Use for | Triggers a release? |
 | --- | --- | --- |
 | `feat:` | New application features or capabilities | Yes (minor) |
-| `fix:` | Bug fixes in application code or dependencies | Yes (patch) |
+| `fix:` | Bug fixes in plugin behavior, or a dependency CVE reachable through plugin code paths (confirmed via `govulncheck`) | Yes (patch) |
 | `feat!:` or `fix!:` | Breaking change | Yes (major) |
-| `build:` | Build system or external dependency changes | No |
+| `build:` | Build-system changes (Makefile, GoReleaser, build scripts) | No |
 | `chore:` | Maintenance, formatting, config | No |
 | `ci:` | CI/CD, workflows, tooling, and infrastructure | No |
 | `docs:` | Documentation only | No |
@@ -106,9 +106,14 @@ Format: `<type>[optional scope]: <description>`
 | `style:` | Code style changes (whitespace, formatting) | No |
 | `test:` | Test changes | No |
 
-> **Important:** `feat:` and `fix:` are reserved exclusively for changes to
-> application code or its dependencies. Workflow, CI, and tooling changes must
-> always use `ci:` — never `feat:` or `fix:`.
+> **Important:** `feat:` and `fix:` are reserved for changes to the plugin's
+> own behavior. Use `ci:` for workflow, CI, and tooling changes. Use
+> `chore(deps):` for dependency bumps (no release); only use `fix:` for a
+> dependency update that fixes a bug or CVE reachable through the plugin's own
+> code paths (confirm with `govulncheck ./...`). Per the Angular convention,
+> dependency changes are not `feat`/`fix` (Angular itself uses `build:`); this
+> project follows the common ecosystem default of `chore(deps):`, which is also
+> what Dependabot and Renovate emit.
 
 ### Body
 
