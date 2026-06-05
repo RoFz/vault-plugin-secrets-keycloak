@@ -18,8 +18,8 @@ cannot fully verify these interactions.
 ## Requirements
 
 | Tool | Minimum version | Notes |
-|---|---|---|
-| Go | 1.21 | Needed to compile the plugin binary |
+| --- | --- | --- |
+| Go | 1.26 | Needed to compile the plugin binary |
 | Docker | 20.10+ | Runs the Vault and Keycloak containers |
 | Python | 3.12 | Managed via pyenv; see setup below |
 | pyenv | any | Pins the Python version for the plugin directory |
@@ -28,14 +28,16 @@ cannot fully verify these interactions.
 
 ### Python packages
 
-All Python dependencies are listed in [tests/requirements.txt](requirements.txt):
+Direct dependencies are declared in [tests/requirements.txt](requirements.txt).
+The fully hash-pinned lock file used by CI and local installs is
+[tests/requirements.lock](requirements.lock):
 
-```
-testcontainers[vault,keycloak]>=4.10.0
-hvac>=2.3.0
-python-keycloak>=4.0.0
-pytest>=8.0.0
-pytest-timeout>=2.3.0
+```text
+testcontainers[vault,keycloak]==4.14.2
+hvac==2.4.0
+python-keycloak==7.1.1
+pytest==9.0.3
+pytest-timeout==2.4.0
 ```
 
 ---
@@ -58,7 +60,7 @@ whenever you are in this directory.
 ### 2. Install Python dependencies
 
 ```sh
-pip install -r tests/requirements.txt
+pip install --require-hashes -r tests/requirements.lock
 ```
 
 ### 3. Verify Docker is running
@@ -125,7 +127,7 @@ Runs the Go unit tests with race detection. Does not start any containers.
 The suite is split across four modules, each covering a distinct plugin path.
 
 | Module | Plugin paths covered |
-|---|---|
+| --- | --- |
 | `test_config.py` | `keycloak/config` |
 | `test_roles.py` | `keycloak/roles/<name>` |
 | `test_users.py` | `keycloak/users`, `keycloak/users/<name>`, `keycloak/users/<name>/rotate` |
@@ -213,7 +215,7 @@ happens in the background after the last test completes.
 
 A passing run looks similar to:
 
-```
+```text
 ========================= test session starts ==========================
 platform darwin -- Python 3.12.8, pytest-9.0.3, pluggy-1.5.0
 collected 23 items
