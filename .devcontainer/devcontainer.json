@@ -1,0 +1,90 @@
+{
+  "name": "vault-plugin-secrets-keycloak",
+  "runArgs": [
+    "--name",
+    "vault-plugin-secrets-keycloak"
+  ],
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "remoteUser": "vscode",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/vault-plugin-secrets-keycloak,type=bind,consistency=cached",
+  "workspaceFolder": "/workspaces/vault-plugin-secrets-keycloak",
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.25"
+    },
+    "ghcr.io/devcontainers/features/node:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "mounts": [
+    {
+      "source": "vault-plugin-secrets-keycloak-claude",
+      "target": "/home/vscode/.claude",
+      "type": "volume"
+    },
+    {
+      "source": "vault-plugin-secrets-keycloak-codex",
+      "target": "/home/vscode/.codex",
+      "type": "volume"
+    }
+    // Commented out: persisting .vscode-server across rebuilds prevents new extensions
+    // (defined in customizations.vscode.extensions) from being installed.
+    // {
+    //   "source": "vault-plugin-secrets-keycloak-vscode-server",
+    //   "target": "/home/vscode/.vscode-server",
+    //   "type": "volume"
+    // }
+  ],
+  "postStartCommand": "sudo chown -R vscode:vscode /home/vscode/.claude /home/vscode/.codex && sudo chmod -R a+rwX /home/vscode/.vscode-server",
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "postAttachCommand": "bash .devcontainer/post-attach.sh",
+  "containerEnv": {
+    "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
+    "CODEX_HOME": "/home/vscode/.codex",
+    "XDG_CACHE_HOME": "/tmp/xdg-cache",
+    "XDG_DATA_HOME": "/tmp/xdg-data"
+  },
+  "remoteEnv": {
+    "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
+    "CODEX_HOME": "/home/vscode/.codex",
+    "XDG_CACHE_HOME": "/tmp/xdg-cache",
+    "XDG_DATA_HOME": "/tmp/xdg-data"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "bierner.github-markdown-preview",
+        "bierner.markdown-mermaid",
+        "clevermonkey.claude-monkey-bar",
+        "codezombiech.gitignore",
+        "davidanson.vscode-markdownlint",
+        "eamodio.gitlens",
+        "editorconfig.editorconfig",
+        "exiasr.hadolint",
+        "foxundermoon.shell-format",
+        "github.vscode-codeql",
+        "github.vscode-github-actions",
+        "golang.go",
+        "gruntfuggly.todo-tree",
+        "jasonnutter.vscode-codeowners",
+        "ms-azuretools.vscode-docker",
+        "openai.chatgpt",
+        "pflannery.vscode-versionlens",
+        "pkief.material-icon-theme",
+        "redhat.vscode-yaml",
+        "shd101wyy.markdown-preview-enhanced",
+        "tamasfe.even-better-toml",
+        "wdhongtw.gpg-indicator",
+        "yzhang.markdown-all-in-one",
+        "ZainChen.json"
+      ],
+      "settings": {
+        "files.eol": "\n",
+        "go.useLanguageServer": true,
+        "go.toolsManagement.autoUpdate": false
+      }
+    }
+  }
+}
