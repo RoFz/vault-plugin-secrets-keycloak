@@ -123,10 +123,10 @@ tmbootpicker.efi
 # .aiderignore
 
 # Claude Code
-.claude/*.local.json
-.claude/**/*.log
+# .claude/*.local.json
+# .claude/**/*.log
 CLAUDE.local.md
-# .claude/
+.claude/
 
 # Gemini CLI
 gemini-debug.log
