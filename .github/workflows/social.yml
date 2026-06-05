@@ -1,0 +1,98 @@
+name: Social Media Announcement
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  mastodon:
+    name: Post to Mastodon
+    runs-on: ubuntu-latest
+    if: github.repository == 'RoFz/vault-plugin-secrets-keycloak'
+    steps:
+      - name: Build message
+        id: msg
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          BODY: ${{ github.event.release.body }}
+          URL: ${{ github.event.release.html_url }}
+        run: |
+          # Extract up to 3 changelog bullets from the release body.
+          # Release-please formats them as: * description ([sha](url))
+          # Strip the trailing commit-hash link and convert to bullet points.
+          BULLETS=$(printf '%s' "$BODY" | tr -d '\r' | grep '^\* ' | head -3 \
+            | sed 's/ (\[.*//g; s/^\* /• /g')
+
+          {
+            printf '🔐 vault-plugin-secrets-keycloak %s\n\n' "$TAG"
+            printf 'HashiCorp Vault secrets engine for Keycloak. Rotate service account'
+            printf ' passwords on-demand via the Admin REST API. Cryptographically'
+            printf ' random, audit-logged, and never stored by Vault.\n'
+            if [ -n "$BULLETS" ]; then
+              printf "\n✨ What's new:\n%s\n" "$BULLETS"
+            fi
+            printf '\n🔗 %s\n\n' "$URL"
+            printf '#HashiCorp #Vault #Keycloak #IAM #OpenSource #DevOps #Kubernetes\n'
+          } > /tmp/mastodon_msg.txt
+
+          {
+            echo "message<<EOF"
+            cat /tmp/mastodon_msg.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post
+        # NOTE: Pinned to full commit SHA for supply-chain security.
+        uses: cbrgm/mastodon-github-action@244bbe72e61b4490e2dc1c34f9537ae9299ae601 # v2.2.1
+        with:
+          url: ${{ secrets.MASTODON_URL }}
+          access-token: ${{ secrets.MASTODON_ACCESS_TOKEN }}
+          message: ${{ steps.msg.outputs.message }}
+          visibility: public
+
+  twitter:
+    name: Post to Twitter/X
+    runs-on: ubuntu-latest
+    if: github.repository == 'RoFz/vault-plugin-secrets-keycloak'
+    steps:
+      - name: Build message
+        id: msg
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          BODY: ${{ github.event.release.body }}
+          URL: ${{ github.event.release.html_url }}
+        run: |
+          # Take the first changelog bullet as the release highlight.
+          # Truncate to 80 chars so the full message stays under 280.
+          FIRST=$(printf '%s' "$BODY" | tr -d '\r' | grep '^\* ' | head -1 \
+            | sed 's/ (\[.*//g; s/^\* //g' | cut -c1-80)
+
+          {
+            if [ -n "$FIRST" ]; then
+              printf '🔐 vault-plugin-secrets-keycloak %s: %s\n\n' "$TAG" "$FIRST"
+            else
+              printf '🔐 vault-plugin-secrets-keycloak %s: Vault secrets engine for' "$TAG"
+              printf ' Keycloak. Rotate service account passwords on-demand,'
+              printf ' random, audit-logged, never stored.\n\n'
+            fi
+            printf '🔗 %s\n\n' "$URL"
+            printf '#Vault #Keycloak #IAM #OpenSource\n'
+          } > /tmp/twitter_msg.txt
+
+          {
+            echo "message<<EOF"
+            cat /tmp/twitter_msg.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post
+        # NOTE: Pinned to full commit SHA for supply-chain security.
+        uses: nearform-actions/github-action-notify-twitter@b3fa623c2f320117e8a08e20564c4ce0a5e67930 # v1.2.3
+        with:
+          message: ${{ steps.msg.outputs.message }}
+          twitter-app-key: ${{ secrets.TWITTER_APP_KEY }}
+          twitter-app-secret: ${{ secrets.TWITTER_APP_SECRET }}
+          twitter-access-token: ${{ secrets.TWITTER_ACCESS_TOKEN }}
+          twitter-access-token-secret: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
