@@ -21,10 +21,10 @@ user.
 
   feat(auth): add OAuth2 login support
 
-  feat(auth): add OAuth2 login handler
-  feat(auth): integrate token refresh flow
-  fix(auth): handle expired session edge case
-  chore(deps): add oauth2 library
+  - feat(auth): add OAuth2 login handler
+  - feat(auth): integrate token refresh flow
+  - fix(auth): handle expired session edge case
+  - chore(deps): add oauth2 library
 
 ### Release-triggering commit types
 
