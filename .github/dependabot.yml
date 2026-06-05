@@ -8,7 +8,8 @@ updates:
     cooldown:
       default-days: 7
     commit-message:
-      prefix: 'fix'
+      prefix: 'chore'
+      include: 'scope'
     groups:
       go-dependencies:
         update-types:
