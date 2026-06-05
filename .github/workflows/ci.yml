@@ -110,7 +110,7 @@ jobs:
       # to the Security tab. always() ensures we still upload when govulncheck
       # itself exits non-zero (though it's documented to exit 0).
       - name: Upload SARIF to Code Scanning
-        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4.35.1
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
         if: always() && github.event.pull_request.head.repo.fork != true
         with:
           sarif_file: govulncheck.sarif
@@ -135,7 +135,7 @@ jobs:
           cache: true
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
+        uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
 
   integration-test:
     name: Integration Tests
