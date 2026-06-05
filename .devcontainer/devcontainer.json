@@ -12,7 +12,7 @@
   "workspaceFolder": "/workspaces/vault-plugin-secrets-keycloak",
   "features": {
     "ghcr.io/devcontainers/features/go:1": {
-      "version": "1.25"
+      "version": "1.26"
     },
     "ghcr.io/devcontainers/features/node:1": {},
     "ghcr.io/devcontainers/features/github-cli:1": {}
@@ -21,11 +21,6 @@
     {
       "source": "vault-plugin-secrets-keycloak-claude",
       "target": "/home/vscode/.claude",
-      "type": "volume"
-    },
-    {
-      "source": "vault-plugin-secrets-keycloak-codex",
-      "target": "/home/vscode/.codex",
       "type": "volume"
     }
     // Commented out: persisting .vscode-server across rebuilds prevents new extensions
@@ -36,18 +31,16 @@
     //   "type": "volume"
     // }
   ],
-  "postStartCommand": "sudo chown -R vscode:vscode /home/vscode/.claude /home/vscode/.codex && sudo chmod -R a+rwX /home/vscode/.vscode-server",
+  "postStartCommand": "sudo chown -R vscode:vscode /home/vscode/.claude && sudo chmod -R a+rwX /home/vscode/.vscode-server",
   "postCreateCommand": "bash .devcontainer/post-create.sh",
   "postAttachCommand": "bash .devcontainer/post-attach.sh",
   "containerEnv": {
     "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
-    "CODEX_HOME": "/home/vscode/.codex",
     "XDG_CACHE_HOME": "/tmp/xdg-cache",
     "XDG_DATA_HOME": "/tmp/xdg-data"
   },
   "remoteEnv": {
     "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
-    "CODEX_HOME": "/home/vscode/.codex",
     "XDG_CACHE_HOME": "/tmp/xdg-cache",
     "XDG_DATA_HOME": "/tmp/xdg-data"
   },
@@ -70,7 +63,6 @@
         "gruntfuggly.todo-tree",
         "jasonnutter.vscode-codeowners",
         "ms-azuretools.vscode-docker",
-        "openai.chatgpt",
         "pflannery.vscode-versionlens",
         "pkief.material-icon-theme",
         "redhat.vscode-yaml",
