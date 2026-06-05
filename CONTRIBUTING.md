@@ -112,15 +112,15 @@ Format: `<type>[optional scope]: <description>`
 
 ### Body
 
-Optional. If present, each line **must** start with a hyphen and space
-(`-` followed by a space):
+Optional. If present, list each change on its own line with no blank lines
+between them:
 
 ```text
 feat: add password rotation endpoint
 
-- feat: implement POST /rotate handler
-- fix: correct token refresh logic on 401 retry
-- ci: add integration test job for rotation
+feat: implement POST /rotate handler
+fix: correct token refresh logic on 401 retry
+ci: add integration test job for rotation
 ```
 
 A breaking change can also be indicated by adding `BREAKING CHANGE:` in the
@@ -130,19 +130,23 @@ commit body footer.
 
 release-please's commit parser
 ([`splitMessages()`](https://github.com/googleapis/release-please/blob/main/src/commit.ts))
-splits commit message bodies on blank lines followed by a conventional commit
-prefix (`feat:`, `fix:`, etc.). If body lines omit the leading hyphen, the
-parser treats each line as a **separate conventional commit**, inflating the
-changelog and version bumps with phantom entries.
+splits a commit body into separate commits whenever it finds a **blank line
+immediately followed by a conventional commit prefix** (`feat:`, `fix:`, etc.).
+The relevant regex is:
+
+```text
+/\r?\n\r?\n(?=(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\(.*?\))?: )/
+```
+
+Body lines that are not preceded by a blank line are never split, regardless of
+their content. Keep all body lines contiguous (no blank lines between them) to
+ensure the commit is treated as a single logical unit.
 
 This is exactly what happened in the early history of this repository: a commit
-body listed changes without hyphens, causing release-please to generate a
-v0.1.0 changelog with 2 features and 7 bug fixes — all from CI/workflow
-changes that should never have been releasable. The entire release history had
-to be reset to correct the damage.
-
-The leading hyphen-space prevents the regex from matching, keeping the body as
-plain text and the commit as a single logical unit.
+body used blank lines to separate change entries, causing release-please to
+generate a v0.1.0 changelog with 2 features and 7 bug fixes — all from
+CI/workflow changes that should never have been releasable. The entire release
+history had to be reset to correct the damage.
 
 ## Submitting a Pull Request
 
