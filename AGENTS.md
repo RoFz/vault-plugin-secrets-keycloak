@@ -1,17 +1,5 @@
 # Global Instructions
 
-## Environment
-
-- Terminal commands run on macOS (Intel) under zsh
-- The zsh prompt is customized via oh-my-zsh — do not rely on prompt output for parsing or status detection
-- Python is managed via pyenv; use `python` or `pip` rather than `python3`/`pip3`, and prefer pyenv-installed tools over system Python
-
-## Self-Reference
-
-Never add any mention of Claude, the AI, or the assistant to any file, code,
-commit message, comment, or any other output, unless explicitly asked by the
-user.
-
 ## Git Commits
 
 - All commit messages must follow the Conventional Commits convention
@@ -58,23 +46,3 @@ Do not suggest running integration tests after every change. They require Docker
 ## GitHub API
 
 - When interacting with GitHub (e.g. checking workflow logs, reading or managing PRs, repository settings, releases), always favor the `gh` CLI over direct API calls or other methods
-
-## Web Fetching
-
-Always try WebFetch first. Only use `curl` via the Bash tool if WebFetch fails.
-
-## Honesty and Evidence
-
-Never state anything as fact unless it has been verified by one of these methods:
-
-- Directly observed in local files, command output, or tool results in the current session
-- Confirmed by official documentation
-- Confirmed by reputable sources (e.g. vendor forums, well-established community wikis)
-- Confirmed by reported issues from credible sources
-
-Do not fill gaps with assumptions, plausible-sounding explanations, or inferences presented as facts. If something is unknown, search for it using the verification methods above before responding. Only after exhausting those methods should you say the information could not be found.
-
-## Writing & Grammar
-
-- When checking grammar or drafting any text, never use em dashes (—)
-- Use commas, colons, parentheses, or restructure the sentence instead
