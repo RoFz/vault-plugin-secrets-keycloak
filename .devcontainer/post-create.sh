@@ -5,9 +5,6 @@ export PATH="$HOME/go/bin:$HOME/.local/bin:$PATH"
 
 echo "[devcontainer] Installing repo tooling..."
 
-# Claude Code
-npm install -g @anthropic-ai/claude-code@2.1.165
-
 # Ensure Claude Code skips onboarding - ~/.claude.json is outside the bind-mounted
 # ~/.claude dir, so it is not persisted automatically and must be seeded on each build.
 test -f ~/.claude.json || echo '{"hasCompletedOnboarding":true,"installMethod":"native"}' > ~/.claude.json
