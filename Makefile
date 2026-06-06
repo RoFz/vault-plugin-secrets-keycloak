@@ -1,4 +1,4 @@
-.PHONY: build build-test-binary test-unit test-integration lint check-deps pre-push all clean
+.PHONY: build build-test-binary test-unit test-integration test-integration-matrix lint check-deps pre-push all clean
 
 BINARY_NAME := vault-plugin-secrets-keycloak
 BIN_DIR     := bin
@@ -29,7 +29,21 @@ test-unit:
 	go test -race ./...
 
 test-integration: build-test-binary
-	TESTCONTAINERS_RYUK_DISABLED=true pytest tests/integration/ -v --timeout=120
+	. ./tests/versions.env; \
+	TESTCONTAINERS_RYUK_DISABLED=true \
+	VAULT_VERSION="$${VAULT_VERSION:-$$VAULT_2X}" \
+	KEYCLOAK_VERSION="$${KEYCLOAK_VERSION:-$$KEYCLOAK}" \
+	pytest tests/integration/ -v --timeout=120
+
+# Run all three Vault lines from tests/versions.env against the pinned Keycloak.
+# Mirrors the CI integration matrix; one pytest session per line.
+test-integration-matrix: build-test-binary
+	. ./tests/versions.env; \
+	for v in "$$VAULT_MPL" "$$VAULT_1X" "$$VAULT_2X"; do \
+	  echo "==> Vault $$v x Keycloak $$KEYCLOAK"; \
+	  TESTCONTAINERS_RYUK_DISABLED=true VAULT_VERSION="$$v" KEYCLOAK_VERSION="$$KEYCLOAK" \
+	    pytest tests/integration/ -v --timeout=120 || exit 1; \
+	done
 
 # Fast checks — run after any Go source change.
 lint:
