@@ -102,3 +102,186 @@ jobs:
               echo "| \`${binary}\` | \`${hash}\` |"
             done < dist/checksums.txt
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Post-release validation: prove the PUBLISHED artifact is authentic (cosign),
+  # intact (sha256), and works across the Vault matrix, then attach a signed
+  # validation report to the release. Runs only when a release was cut.
+  release-verify:
+    name: Verify the published release
+    needs: [release-please, goreleaser]
+    if: needs.release-please.outputs.releases_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      vault: ${{ steps.versions.outputs.vault }}
+      keycloak: ${{ steps.versions.outputs.keycloak }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.release-please.outputs.tag_name }}
+      # Verified against the published v0.2.0 bundle: the signing identity is the
+      # release workflow ref (stable across releases); issuer is GitHub OIDC.
+      COSIGN_IDENTITY: https://github.com/RoFz/vault-plugin-secrets-keycloak/.github/workflows/release-please.yml@refs/heads/main
+      COSIGN_ISSUER: https://token.actions.githubusercontent.com
+
+    steps:
+      - name: Checkout the released tag
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          persist-credentials: false
+
+      - name: Resolve test versions
+        id: versions
+        run: |
+          . ./tests/versions.env
+          echo "vault=[\"$VAULT_MPL\",\"$VAULT_1X\",\"$VAULT_2X\"]" >> "$GITHUB_OUTPUT"
+          echo "keycloak=$KEYCLOAK" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Download and verify the published binary
+        run: |
+          mkdir -p staging verified
+          gh release download "$TAG" \
+            --pattern '*_linux_amd64' \
+            --pattern 'checksums.txt' \
+            --pattern 'checksums.txt.sigstore.json' \
+            --dir staging
+          cd staging
+          cosign verify-blob --bundle checksums.txt.sigstore.json \
+            --certificate-identity   "$COSIGN_IDENTITY" \
+            --certificate-oidc-issuer "$COSIGN_ISSUER" \
+            checksums.txt
+          sha256sum -c --ignore-missing checksums.txt
+          binary="$(ls ./*_linux_amd64)"
+          sha="$(sha256sum "$binary" | cut -d' ' -f1)"
+          cp "$binary" ../verified/vault-plugin-secrets-keycloak
+          cd ..
+          jq -n \
+            --arg tag "$TAG" --arg binary "$(basename "$binary")" --arg sha "$sha" \
+            --arg id "$COSIGN_IDENTITY" --arg iss "$COSIGN_ISSUER" \
+            '{tag: $tag, binary: $binary, sha256: $sha, cosign_verified: true, cosign_identity: $id, cosign_issuer: $iss}' \
+            > verified/verification.json
+
+      - name: Upload the verified binary + provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-verification
+          path: verified/
+          retention-days: 7
+
+  release-test:
+    name: Integration test (Vault ${{ matrix.vault }})
+    needs: [release-please, release-verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        vault: ${{ fromJSON(needs.release-verify.outputs.vault) }}
+    env:
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+      VAULT_VERSION: ${{ matrix.vault }}
+      KEYCLOAK_VERSION: ${{ needs.release-verify.outputs.keycloak }}
+
+    steps:
+      - name: Checkout the released tag
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          persist-credentials: false
+
+      - name: Download the verified binary
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-verification
+          path: verified
+
+      - name: Place the verified binary
+        run: |
+          mkdir -p bin
+          cp verified/vault-plugin-secrets-keycloak bin/vault-plugin-secrets-keycloak
+          chmod +x bin/vault-plugin-secrets-keycloak
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tests/requirements.lock
+
+      - name: Install Python dependencies
+        run: pip install --require-hashes -r tests/requirements.lock
+
+      - name: Pull images and record digests
+        run: |
+          mkdir -p leg
+          vault_image="hashicorp/vault:${VAULT_VERSION}"
+          keycloak_image="quay.io/keycloak/keycloak:${KEYCLOAK_VERSION}"
+          docker pull "$vault_image"
+          docker pull "$keycloak_image"
+          vault_digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$vault_image" | cut -d@ -f2)"
+          keycloak_digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$keycloak_image" | cut -d@ -f2)"
+          jq -n \
+            --arg label "Vault ${VAULT_VERSION}" \
+            --arg vi "$vault_image" --arg vd "$vault_digest" \
+            --arg ki "$keycloak_image" --arg kd "$keycloak_digest" \
+            '{label: $label, vault_image: $vi, vault_digest: $vd, keycloak_image: $ki, keycloak_digest: $kd}' \
+            > leg/meta.json
+
+      - name: Run integration suite against the released binary
+        run: pytest tests/integration/ -v --timeout=120 --junit-xml=leg/results.xml
+
+      - name: Upload leg results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: results-vault-${{ matrix.vault }}
+          path: leg/
+          retention-days: 7
+
+  release-report:
+    name: Release validation report
+    needs: [release-please, release-verify, release-test]
+    if: always() && needs.release-please.outputs.releases_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.release-please.outputs.tag_name }}
+
+    steps:
+      - name: Checkout the released tag
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          persist-credentials: false
+
+      - name: Download leg results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: results-vault-*
+          path: all-results
+
+      - name: Download provenance
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-verification
+          path: verified
+
+      - name: Build the validation report
+        run: |
+          python3 .github/scripts/aggregate_results.py all-results \
+            --title "Release validation ${TAG}" \
+            --commit "${GITHUB_SHA}" \
+            --repo-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --provenance verified/verification.json \
+            --json-out validation-report.json \
+            | tee validation-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attach the validation report to the release
+        run: gh release upload "$TAG" validation-report.md validation-report.json --clobber
