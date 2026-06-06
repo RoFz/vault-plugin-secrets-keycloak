@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate per-leg integration/smoke results into one Markdown report.
+"""Aggregate per-leg integration results into one Markdown report.
 
 Reads a directory of per-leg result folders (each produced by one matrix leg and
 downloaded as a workflow artifact) and emits a single Markdown report with:
@@ -15,7 +15,7 @@ Each leg folder must contain:
   meta.json    -- {"label", "vault_image", "vault_digest",
                    "keycloak_image", "keycloak_digest"}
 
-Used only by CI (the integration-report and smoke-report jobs). Pure standard
+Used only by CI (the integration-report and release-report jobs). Pure standard
 library, so the report job needs no extra dependencies.
 """
 
@@ -86,7 +86,7 @@ def load_legs(results_dir: Path) -> list[Leg]:
     return legs
 
 
-def render(legs: list[Leg], title: str, commit: str | None, repo_url: str | None) -> tuple[str, bool]:
+def render(legs: list[Leg], title: str, commit: str | None, repo_url: str | None, provenance: dict | None = None) -> tuple[str, bool]:
     test_ids = sorted({t for leg in legs for t in leg.results})
 
     total = failed = 0
@@ -106,6 +106,15 @@ def render(legs: list[Leg], title: str, commit: str | None, repo_url: str | None
             if repo_url
             else f"**Plugin commit:** `{short}`"
         )
+    if provenance:
+        sig = f"{PASS} cosign verified" if provenance.get("cosign_verified") else f"{FAIL} cosign NOT verified"
+        out += ["", "### Release artifact", ""]
+        out.append(f"- **Tag:** `{provenance.get('tag', '?')}`")
+        out.append(f"- **Binary:** `{provenance.get('binary', '?')}`")
+        out.append(f"- **SHA-256:** `{provenance.get('sha256', '?')}` (checksum verified)")
+        out.append(f"- **Signature:** {sig}")
+        out.append(f"  - identity: `{provenance.get('cosign_identity', '?')}`")
+        out.append(f"  - issuer: `{provenance.get('cosign_issuer', '?')}`")
     out += ["", "### Versions under test", ""]
     for leg in legs:
         meta = leg.meta
@@ -132,6 +141,7 @@ def main() -> int:
     ap.add_argument("--commit", default=None, help="plugin commit SHA under test")
     ap.add_argument("--repo-url", default=None, help="repo URL for linking the commit")
     ap.add_argument("--json-out", type=Path, default=None, help="also write a canonical JSON report")
+    ap.add_argument("--provenance", type=Path, default=None, help="verification.json (release artifact: tag, sha256, cosign verdict) for the proof header")
     args = ap.parse_args()
 
     legs = load_legs(args.results_dir)
@@ -139,7 +149,8 @@ def main() -> int:
         print(f"No result legs (looked for */meta.json under {args.results_dir})", file=sys.stderr)
         return 1
 
-    markdown, ok = render(legs, args.title, args.commit, args.repo_url)
+    provenance = json.loads(args.provenance.read_text()) if args.provenance else None
+    markdown, ok = render(legs, args.title, args.commit, args.repo_url, provenance)
     sys.stdout.write(markdown)
 
     if args.json_out:
@@ -149,6 +160,7 @@ def main() -> int:
                     "title": args.title,
                     "commit": args.commit,
                     "ok": ok,
+                    "provenance": provenance,
                     "legs": [
                         {"label": leg.label, "meta": leg.meta, "results": leg.results, "parse_error": leg.parse_error}
                         for leg in legs
