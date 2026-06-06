@@ -160,6 +160,36 @@ registries (Docker Hub / quay.io), not `releases.hashicorp.com`.
 
 ---
 
+## Validating a published release
+
+The targets above test the plugin built from your working tree. To instead
+validate an already-published release, exactly as a user would download it:
+
+```sh
+make release-validate TAG=v0.2.1
+```
+
+This target:
+
+1. Downloads the published `linux/amd64` binary, `checksums.txt`, and the cosign
+   signature bundle (`checksums.txt.sigstore.json`) for `TAG` from the GitHub
+   release.
+2. Verifies the bundle with `cosign verify-blob`, asserting the release
+   workflow's signing identity and the GitHub OIDC issuer (provenance), then
+   checks the binary against `checksums.txt` (integrity).
+3. Runs the full version matrix from `tests/versions.env` against that verified
+   binary.
+
+It needs two tools beyond the integration requirements: the GitHub CLI (`gh`,
+authenticated) and `cosign`.
+
+CI performs the same validation automatically. On every release publish the
+published binary is verified (cosign + checksum), tested across the full matrix,
+and a validation report (operations x versions, plus the checksum and signature
+verdict) is attached to the release as durable proof it was validated.
+
+---
+
 ## Test structure
 
 The suite is split across four modules, each covering a distinct plugin path.
