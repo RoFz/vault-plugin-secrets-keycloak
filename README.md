@@ -105,12 +105,18 @@ where applicable) are published on the
 [Releases page](https://github.com/RoFz/vault-plugin-secrets-keycloak/releases).
 
 Download the binary for your platform and verify the SHA-256 checksum from
-`checksums.txt`:
+`checksums.txt`. The binary file name embeds the release version
+(`vault-plugin-secrets-keycloak_<version>_<os>_<arch>`), so resolve the latest
+version first:
 
 ```bash
 # Example: Linux amd64
-curl -LO https://github.com/RoFz/vault-plugin-secrets-keycloak/releases/latest/download/vault-plugin-secrets-keycloak_linux_amd64
-curl -LO https://github.com/RoFz/vault-plugin-secrets-keycloak/releases/latest/download/checksums.txt
+VERSION=$(curl -fsSL https://api.github.com/repos/RoFz/vault-plugin-secrets-keycloak/releases/latest | jq -r .tag_name)
+BINARY="vault-plugin-secrets-keycloak_${VERSION#v}_linux_amd64"
+BASE="https://github.com/RoFz/vault-plugin-secrets-keycloak/releases/download/${VERSION}"
+
+curl -fLO "${BASE}/${BINARY}"
+curl -fLO "${BASE}/checksums.txt"
 sha256sum --check --ignore-missing checksums.txt
 ```
 
