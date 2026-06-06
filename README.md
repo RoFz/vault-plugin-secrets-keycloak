@@ -20,6 +20,7 @@ inside Vault.
   - [What this plugin does](#what-this-plugin-does)
   - [What this plugin does not do](#what-this-plugin-does-not-do)
   - [Process flow](#process-flow)
+  - [Compatibility](#compatibility)
   - [Installation](#installation)
     - [Download pre-built binaries](#download-pre-built-binaries)
     - [Build from source](#build-from-source)
@@ -95,6 +96,22 @@ flowchart TD
   B -->|keycloak/users/username/rotate| L[Generate password + reset in Keycloak]
   L --> M[Return username and new password]
 ```
+
+## Compatibility
+
+Every change is tested in CI against a matrix of Vault and Keycloak versions; the
+full integration suite (configure, rotate, verify, KV sync) runs against each
+pair. The plugin tracks the last MPL-2.0 Vault line, the latest 1.x, and the
+latest 2.x, plus the latest Keycloak.
+
+| Component | Tested versions |
+| --- | --- |
+| Vault | `1.14.10` (last MPL-2.0), `1.21.4` (latest 1.x), `2.0.2` (latest 2.x) |
+| Keycloak | `26.6.3` (latest) |
+
+The exact pinned image tags are maintained in
+[`tests/versions.env`](tests/versions.env). Other versions may work but are not
+exercised by the suite.
 
 ## Installation
 
