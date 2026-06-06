@@ -89,6 +89,25 @@ This target:
 2. Runs the full integration test suite with verbose output and a 120-second
    per-test timeout.
 
+The Vault and Keycloak image versions come from
+[tests/versions.env](versions.env), the single source of truth shared with CI.
+By default this runs the latest 2.x Vault line; override a single run with
+environment variables:
+
+```sh
+VAULT_VERSION=1.21.4 KEYCLOAK_VERSION=26.6.3 make test-integration
+```
+
+### Full version matrix
+
+```sh
+make test-integration-matrix
+```
+
+Runs the suite once per Vault line in `tests/versions.env` (latest MPL, latest
+1.x, latest 2.x) against the pinned Keycloak, mirroring the CI matrix. This is
+slower: it starts a fresh Vault + Keycloak container set per line.
+
 ### Step by step
 
 If you want to run the build and tests separately:
@@ -122,6 +141,25 @@ Runs the Go unit tests with race detection. Does not start any containers.
 
 ---
 
+## Tested versions
+
+Vault and Keycloak versions are pinned as exact image tags in
+[tests/versions.env](versions.env), the single source of truth for both local
+runs and CI:
+
+| Slot | What it tracks | Allowed range |
+| --- | --- | --- |
+| `VAULT_MPL` | latest 1.14.x (last MPL-2.0 line) | fixed |
+| `VAULT_1X` | latest 1.x image | `<2.0.0` |
+| `VAULT_2X` | latest 2.x image | `>=2.0.0 <3.0.0` |
+| `KEYCLOAK` | latest Keycloak | latest |
+
+Bump a line in `versions.env` and both local and CI follow. Image tags are not
+the same as binary release versions, so pins are verified against the container
+registries (Docker Hub / quay.io), not `releases.hashicorp.com`.
+
+---
+
 ## Test structure
 
 The suite is split across four modules, each covering a distinct plugin path.
@@ -138,13 +176,14 @@ The suite is split across four modules, each covering a distinct plugin path.
 Session-scoped fixtures start once per `pytest` invocation and are shared
 across all modules:
 
-- `keycloak_container`: starts a Keycloak 26.5.7 container.
+- `keycloak_container`: starts a Keycloak container (version from
+  `tests/versions.env`; default 26.6.3).
 - `keycloak_realm` (autouse): creates the `test-realm` realm and two dedicated
   test users (`vault-ephemeral-user`, `vault-rotate-user`). Also creates a
   `test-client` OIDC public client used to verify that passwords are accepted
   by Keycloak.
-- `vault_container`: starts a Vault 1.21.4 dev container with the plugin
-  binary mounted at `/vault/plugins/`.
+- `vault_container`: starts a Vault dev container (version from
+  `tests/versions.env`) with the plugin binary mounted at `/vault/plugins/`.
 - `vault_client`: registers the plugin in Vault's catalog, enables it at the
   `keycloak` mount, and enables a KV v2 mount at `kv-test` for sync tests.
 - `plugin_config_params`: returns the base configuration dict. The Keycloak URL
