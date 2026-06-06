@@ -11,6 +11,7 @@ the plugin configured against Keycloak define their own module-scoped
 """
 
 import hashlib
+import os
 from pathlib import Path
 
 import hvac
@@ -26,10 +27,14 @@ PLUGIN_BINARY = Path(__file__).parents[2] / "bin" / "vault-plugin-secrets-keyclo
 PLUGIN_NAME = "vault-plugin-secrets-keycloak"
 PLUGIN_MOUNT = "keycloak"
 
-VAULT_IMAGE = "hashicorp/vault:1.21.4"
+# Image versions are overridable via env so the CI matrix and `make` targets can
+# pin specific Vault/Keycloak versions; defaults track the latest tested versions.
+VAULT_VERSION = os.environ.get("VAULT_VERSION", "1.21.4")
+VAULT_IMAGE = f"hashicorp/vault:{VAULT_VERSION}"
 VAULT_ROOT_TOKEN = "root-token"
 
-KEYCLOAK_IMAGE = "quay.io/keycloak/keycloak:26.5.7"
+KEYCLOAK_VERSION = os.environ.get("KEYCLOAK_VERSION", "26.6.3")
+KEYCLOAK_IMAGE = f"quay.io/keycloak/keycloak:{KEYCLOAK_VERSION}"
 KEYCLOAK_ADMIN_USER = "admin"
 KEYCLOAK_ADMIN_PASS = "admin"
 
