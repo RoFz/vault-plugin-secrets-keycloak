@@ -58,7 +58,7 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test -race ./...
+        run: go test -race -timeout=5m ./...
 
       # NOTE: Adopted from HashiCorp vault-workflows-common — builds the plugin
       # binary targeting linux/amd64 (the GitHub Actions runner architecture).
@@ -172,7 +172,7 @@ jobs:
 
       # Same invocation as `make cover`: deterministic in-process unit coverage.
       - name: Generate coverage profile
-        run: go test ./... -coverprofile=cover.out -covermode=atomic -coverpkg=./...
+        run: go test -timeout=5m ./... -coverprofile=cover.out -covermode=atomic -coverpkg=./...
 
       # On PRs, recompute main's coverage live (no stored baseline) so the comment
       # can show the per-file and total delta vs main. Degrades gracefully (the
@@ -184,7 +184,7 @@ jobs:
           fail() { exit 0; } # no base.breakdown -> the comment script omits the delta
           git fetch --no-tags --depth=1 origin main || fail
           git worktree add --detach /tmp/main FETCH_HEAD || fail
-          ( cd /tmp/main && go test ./... -coverprofile=/tmp/base.out -covermode=atomic -coverpkg=./... ) || fail
+          ( cd /tmp/main && go test -timeout=5m ./... -coverprofile=/tmp/base.out -covermode=atomic -coverpkg=./... ) || fail
           printf 'exclude:\n  paths: ["^cmd/"]\nthreshold: {file: 0, package: 0, total: 0}\n' > /tmp/basegen.yml
           go run github.com/vladopajic/go-test-coverage/v2@v2.18.8 \
             --config=/tmp/basegen.yml --profile=/tmp/base.out \

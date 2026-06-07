@@ -32,7 +32,7 @@ build-test-binary:
 	@echo "Built $(BIN_DIR)/$(BINARY_NAME) (linux/$(GOARCH_TARGET))"
 
 test-unit:
-	go test -race ./...
+	go test -race -timeout=5m ./...
 
 # In-process unit-test coverage (deterministic). Generates the profile and
 # enforces the risk-based thresholds in .testcoverage.yml (per-file floors on
@@ -40,7 +40,7 @@ test-unit:
 # behaviour is additionally covered by the integration suite, which this number
 # does not include.
 cover:
-	go test ./... -coverprofile=$(COVER_PROFILE) -covermode=atomic -coverpkg=./...
+	go test -timeout=5m ./... -coverprofile=$(COVER_PROFILE) -covermode=atomic -coverpkg=./...
 	go run github.com/vladopajic/go-test-coverage/v2@v2.18.8 --config=.testcoverage.yml
 
 test-integration: build-test-binary
