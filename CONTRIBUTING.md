@@ -61,6 +61,13 @@ pipeline runs the full test suite on every push and pull request; merges are
 blocked if tests fail. When modifying existing behaviour, update the affected
 tests to reflect the change.
 
+CI also enforces a **coverage gate** ([`.testcoverage.yml`](.testcoverage.yml)):
+a blanket per-file floor with higher floors on the security-critical files, plus
+an overall floor. A PR that drops a file below its floor fails the check, and
+every PR gets a comment with the coverage delta versus `main`. Run `make cover`
+locally to check before pushing; see
+[tests/TESTING.md](tests/TESTING.md#testing-strategy) for the tiers.
+
 ### Integration test Python dependencies
 
 Integration tests use Python packages listed in
@@ -171,7 +178,8 @@ history had to be reset to correct the damage.
 1. For non-trivial changes, open an issue first to discuss the approach.
 2. Fork the repository and create a branch from `main`.
 3. Make your changes, including tests for new behaviour.
-4. Ensure `go test ./...` and `golangci-lint run` pass locally.
+4. Ensure `go test ./...`, `make cover` (the coverage gate), and
+   `golangci-lint run` pass locally.
 5. Write commit messages following the Conventional Commits format above.
 6. Open a pull request against `main`. Keep each PR to a single logical change.
 

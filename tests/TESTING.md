@@ -239,6 +239,36 @@ verdict) is attached to the release as durable proof it was validated.
 
 ## Test structure
 
+The Go in-process tests live next to the source; the pytest integration suite is
+split across four modules. Both are described below.
+
+### Go (in-process) tests
+
+The Go tests live next to the code they cover (`*_test.go` in the package root)
+and run the backend **in-process**, no Docker, no real Vault or Keycloak:
+
+- `newTestBackend(t)` (`backend_test.go`) builds the backend via `backend()` +
+  `logical.InmemStorage{}` and drives it with `b.HandleRequest(...)`.
+- `fakeKC` (`keycloak_fake_test.go`) is a configurable, recording stand-in for
+  the Keycloak Admin REST API (`httptest`); `configureBackend` points the backend
+  at it, so the Keycloak-calling paths run without a real Keycloak.
+
+| File | Covers |
+| --- | --- |
+| `backend_test.go` | `config` & `roles` CRUD, `Factory` |
+| `backend_invalidate_test.go` | cached-client invalidation on config change |
+| `client_test.go` | Keycloak client construction & validation |
+| `keycloak_http_test.go` | `users` list/read/rotate (+ rotate KV sync) |
+| `path_credentials_test.go` | `creds` issuance, revoke/renew, secret-leak, KV fail-safe |
+| `kv_sync_test.go` | KV create-on-missing fallback |
+| `password_test.go` | password generation |
+
+When you add a Vault path or change behaviour, add an in-process test here that
+asserts the behaviour, error and security cases included, not just the happy
+path. See [Testing strategy](#testing-strategy) for the risk tiers.
+
+### Integration modules (pytest)
+
 The suite is split across four modules, each covering a distinct plugin path.
 
 | Module | Plugin paths covered |
