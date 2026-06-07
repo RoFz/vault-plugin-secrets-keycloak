@@ -118,6 +118,8 @@ have_base=0
         }' base.breakdown pr.breakdown)"
       if [ -n "$rows" ]; then
         echo
+        echo "_Coverage can shift in files the PR didn't edit, so this lists every file whose coverage changed versus \`main\`._"
+        echo
         echo "| File | This PR | \`main\` |"
         echo "|------|--------:|-------:|"
         printf '%s\n' "$rows"
