@@ -43,7 +43,7 @@ EOF
 # broken table if the structured data is missing or unparseable.
 fallback() {
   {
-    echo "## Coverage"
+    echo "# Coverage"
     echo
     echo '```text'
     printf '%s\n' "$REPORT"
