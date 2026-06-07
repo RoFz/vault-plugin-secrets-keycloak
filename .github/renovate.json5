@@ -1,0 +1,39 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended"],
+
+  // Narrow scope: Renovate tracks ONLY the Vault/Keycloak image pins in
+  // tests/versions.env. Dependabot keeps gomod + github-actions; restricting the
+  // managers here prevents duplicate PRs across the two bots.
+  enabledManagers: ["custom.regex"],
+
+  dependencyDashboard: true,
+  schedule: ["before 6am on monday"], // weekly
+  minimumReleaseAge: "15 days", // let a bad image tag get pulled before we adopt it
+
+  // These are test-environment image versions, not application dependencies, so
+  // they use test(deps): (non-releasing, hidden from the changelog like chore).
+  semanticCommits: "enabled",
+  semanticCommitType: "test",
+  semanticCommitScope: "deps",
+
+  customManagers: [
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^tests/versions\\.env$/"],
+      // Read each `# renovate:` annotation, then the value on the next line.
+      matchStrings: [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: packageName=(?<packageName>\\S+))?(?: versioning=(?<versioning>\\S+))?\\s+\\w+=(?<currentValue>\\S+)",
+      ],
+      versioningTemplate: "{{#if versioning}}{{{versioning}}}{{else}}docker{{/if}}",
+    },
+  ],
+
+  // Keep each Vault pin in its major line; both resolve to the same image
+  // (packageName hashicorp/vault) but carry distinct depNames set in the
+  // annotations. Keycloak tracks the newest tag (no constraint).
+  packageRules: [
+    { matchDepNames: ["vault-1x"], allowedVersions: "<2.0.0" },
+    { matchDepNames: ["vault-2x"], allowedVersions: ">=2.0.0 <3.0.0" },
+  ],
+}
