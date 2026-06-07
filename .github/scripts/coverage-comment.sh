@@ -59,6 +59,8 @@ have_base=0
 [ -s base.breakdown ] && have_base=1
 
 {
+  echo "## Coverage"
+  echo
   if gate_failed; then
     # The gate fails on a total-coverage breach, a per-file floor breach, or both.
     # Name whichever happened: the total breach states the overall minimum; the
@@ -71,9 +73,9 @@ have_base=0
     if printf '%s\n' "$REPORT" | grep -qE 'File coverage threshold.*FAIL'; then file_failed=1; fi
 
     if [ "$total_failed" = 1 ]; then
-      echo "## ❌ This change drops coverage to ${pr_total}%, below the required ${total_thr:-?}% minimum."
+      echo "**Result:** ❌ This change drops coverage to ${pr_total}%, below the required ${total_thr:-?}% minimum"
     else
-      echo "## ❌ This change leaves one or more files below their required minimum:"
+      echo "**Result:** ❌ This change leaves one or more files below their required minimum:"
     fi
 
     if [ "$file_failed" = 1 ]; then
@@ -96,14 +98,14 @@ have_base=0
     if [ "$have_base" = 1 ]; then
       base_total="$(total_pct base.breakdown)"
       if [ "$pr_total" = "$base_total" ]; then
-        echo "## ✅ This change keeps coverage at ${pr_total}%."
+        echo "**Result:** ✅ This change keeps coverage at ${pr_total}%"
       elif awk "BEGIN{exit !($pr_total > $base_total)}"; then
-        echo "## ✅ This change increases coverage from ${base_total}% to ${pr_total}%."
+        echo "**Result:** ✅ This change increases coverage from ${base_total}% to ${pr_total}%"
       else
-        echo "## ⚠️ This change decreases coverage from ${base_total}% to ${pr_total}%."
+        echo "**Result:** ⚠️ This change decreases coverage from ${base_total}% to ${pr_total}%"
       fi
     else
-      echo "## ✅ Coverage is ${pr_total}%."
+      echo "**Result:** ✅ Coverage is ${pr_total}%"
     fi
 
     # Per-file table: only files whose coverage changed vs main (needs base).
