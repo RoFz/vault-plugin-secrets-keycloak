@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/RoFz/vault-plugin-secrets-keycloak/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RoFz/vault-plugin-secrets-keycloak/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/RoFz/vault-plugin-secrets-keycloak/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/RoFz/vault-plugin-secrets-keycloak/actions/workflows/codeql.yml)
+[![Coverage](https://raw.githubusercontent.com/RoFz/vault-plugin-secrets-keycloak/badges/.badges/main/coverage.svg)](tests/TESTING.md#testing-strategy)
 [![Release](https://img.shields.io/github/v/release/RoFz/vault-plugin-secrets-keycloak)](https://github.com/RoFz/vault-plugin-secrets-keycloak/releases/latest)
 [![Go](https://img.shields.io/badge/go-1.26-blue)](https://go.dev/doc/go1.26)
 [![License](https://img.shields.io/github/license/RoFz/vault-plugin-secrets-keycloak)](LICENSE)
@@ -20,6 +21,7 @@ inside Vault.
   - [What this plugin does](#what-this-plugin-does)
   - [What this plugin does not do](#what-this-plugin-does-not-do)
   - [Process flow](#process-flow)
+  - [Compatibility](#compatibility)
   - [Installation](#installation)
     - [Download pre-built binaries](#download-pre-built-binaries)
     - [Build from source](#build-from-source)
@@ -96,23 +98,61 @@ flowchart TD
   L --> M[Return username and new password]
 ```
 
+## Compatibility
+
+Every change is tested in CI against a matrix of Vault and Keycloak versions; the
+full integration suite (configure, rotate, verify, KV sync) runs against each
+pair. The plugin tracks the last MPL-2.0 Vault line, the latest 1.x, and the
+latest 2.x, plus the latest Keycloak.
+
+| Component | Tested versions |
+| --- | --- |
+| Vault | `1.14.10` (last MPL-2.0), `1.21.4` (latest 1.x), `2.0.2` (latest 2.x) |
+| Keycloak | `26.6.3` (latest) |
+
+The exact pinned image tags are maintained in
+[`tests/versions.env`](tests/versions.env). Other versions may work but are not
+exercised by the suite.
+
 ## Installation
 
 ### Download pre-built binaries
 
-Pre-built binaries for Linux, macOS, Windows, and FreeBSD (amd64 and arm64
-where applicable) are published on the
+Pre-built binaries for Linux, macOS, Windows, and FreeBSD (amd64, arm64, and
+386 where applicable) are published on the
 [Releases page](https://github.com/RoFz/vault-plugin-secrets-keycloak/releases).
 
-Download the binary for your platform and verify the SHA-256 checksum from
-`checksums.txt`:
+Each release is signed with [cosign](https://docs.sigstore.dev/) keyless
+signing: `checksums.txt` is signed (the signature bundle is
+`checksums.txt.sigstore.json`), and every binary is listed in `checksums.txt`.
+Verify the **signature** (provenance) first, then the **checksum** (integrity).
+The binary file name embeds the release version
+(`vault-plugin-secrets-keycloak_<version>_<os>_<arch>`), so resolve the latest
+version first:
 
 ```bash
-# Example: Linux amd64
-curl -LO https://github.com/RoFz/vault-plugin-secrets-keycloak/releases/latest/download/vault-plugin-secrets-keycloak_linux_amd64
-curl -LO https://github.com/RoFz/vault-plugin-secrets-keycloak/releases/latest/download/checksums.txt
+# Example: Linux amd64 (requires cosign and jq)
+VERSION=$(curl -fsSL https://api.github.com/repos/RoFz/vault-plugin-secrets-keycloak/releases/latest | jq -r .tag_name)
+BINARY="vault-plugin-secrets-keycloak_${VERSION#v}_linux_amd64"
+BASE="https://github.com/RoFz/vault-plugin-secrets-keycloak/releases/download/${VERSION}"
+
+curl -fLO "${BASE}/${BINARY}"
+curl -fLO "${BASE}/checksums.txt"
+curl -fLO "${BASE}/checksums.txt.sigstore.json"
+
+# 1. Provenance: verify checksums.txt was signed by this repo's release workflow.
+cosign verify-blob \
+  --bundle checksums.txt.sigstore.json \
+  --certificate-identity "https://github.com/RoFz/vault-plugin-secrets-keycloak/.github/workflows/release-please.yml@refs/heads/main" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  checksums.txt
+
+# 2. Integrity: verify the downloaded binary against the signed checksums.
 sha256sum --check --ignore-missing checksums.txt
 ```
+
+> The signature uses the Sigstore bundle format (`checksums.txt.sigstore.json`);
+> the command above is verified with cosign v2.4.3 and v3.0.6.
 
 ### Build from source
 
@@ -497,9 +537,9 @@ Returns `{ username, password }` with a Vault lease. On lease revocation the
 password is rotated again to a discarded value, invalidating the issued
 credential. On lease renewal the TTL is extended without rotation.
 
-> **Alpha:** automatic lease expiry and revocation have not been fully
-> validated end-to-end. See the [Credential lifecycle](#credential-lifecycle)
-> section for caveats.
+> **Alpha:** the revoke/renew logic is unit-tested, but automatic lease expiry
+> and revocation have not been validated end-to-end against a live Vault lease.
+> See the [Credential lifecycle](#credential-lifecycle) section for caveats.
 
 ## Usage
 
@@ -540,8 +580,9 @@ automatic revocation. Every call is recorded in the Vault audit log
 > The plugin also implements a role-based, lease-bound issuance path
 > (`vault read keycloak/creds/<role>`) where Vault manages a TTL and
 > automatically invalidates the credential on expiry by re-rotating the
-> password to a discarded value. Automatic lease expiry and revocation
-> have not been fully validated end-to-end and are considered alpha.
+> password to a discarded value. The revoke/renew callbacks are unit-tested,
+> but automatic lease expiry and revocation have not been validated end-to-end
+> against a live Vault lease, and are considered alpha.
 > See `path_credentials.go` in the source for implementation details.
 >
 > **Alpha caveat — Vault availability at revocation time:**

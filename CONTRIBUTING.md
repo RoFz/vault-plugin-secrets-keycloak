@@ -19,7 +19,7 @@ See [SECURITY.md](SECURITY.md) for the responsible disclosure process.
 
 The repository ships a [VS Code dev container](.devcontainer/devcontainer.json)
 that pre-installs all required tools: Go, golangci-lint, gofumpt, govulncheck,
-pre-commit, and pip-tools. Open the repo in VS Code and accept the
+go-licenses, pre-commit, and pip-tools. Open the repo in VS Code and accept the
 "Reopen in Container" prompt, or use the Dev Containers CLI:
 
 ```sh
@@ -37,9 +37,22 @@ go build ./...
 
 ## Running Tests
 
+Fast, no Docker required:
+
 ```sh
-go test ./...
+make test-unit   # Go unit tests with the race detector
+make cover       # coverage profile + risk-based thresholds (.testcoverage.yml)
 ```
+
+Integration tests (require Docker):
+
+```sh
+make test-integration          # one Vault line
+make test-integration-matrix   # every supported Vault line
+```
+
+See [tests/TESTING.md](tests/TESTING.md) for the full testing strategy, the
+coverage policy, and setup details.
 
 ### Test policy
 
@@ -47,6 +60,13 @@ All new features and bug fixes **must** include corresponding tests. The CI
 pipeline runs the full test suite on every push and pull request; merges are
 blocked if tests fail. When modifying existing behaviour, update the affected
 tests to reflect the change.
+
+CI also enforces a **coverage gate** ([`.testcoverage.yml`](.testcoverage.yml)):
+a blanket per-file floor with higher floors on the security-critical files, plus
+an overall floor. A PR that drops a file below its floor fails the check, and
+every PR gets a comment with the coverage delta versus `main`. Run `make cover`
+locally to check before pushing; see
+[tests/TESTING.md](tests/TESTING.md#testing-strategy) for the tiers.
 
 ### Integration test Python dependencies
 
@@ -94,9 +114,9 @@ Format: `<type>[optional scope]: <description>`
 | Prefix | Use for | Triggers a release? |
 | --- | --- | --- |
 | `feat:` | New application features or capabilities | Yes (minor) |
-| `fix:` | Bug fixes in application code or dependencies | Yes (patch) |
+| `fix:` | Bug fixes in plugin behavior, or a dependency CVE reachable through plugin code paths (confirmed via `govulncheck`) | Yes (patch) |
 | `feat!:` or `fix!:` | Breaking change | Yes (major) |
-| `build:` | Build system or external dependency changes | No |
+| `build:` | Build-system changes (Makefile, GoReleaser, build scripts) | No |
 | `chore:` | Maintenance, formatting, config | No |
 | `ci:` | CI/CD, workflows, tooling, and infrastructure | No |
 | `docs:` | Documentation only | No |
@@ -106,9 +126,14 @@ Format: `<type>[optional scope]: <description>`
 | `style:` | Code style changes (whitespace, formatting) | No |
 | `test:` | Test changes | No |
 
-> **Important:** `feat:` and `fix:` are reserved exclusively for changes to
-> application code or its dependencies. Workflow, CI, and tooling changes must
-> always use `ci:` — never `feat:` or `fix:`.
+> **Important:** `feat:` and `fix:` are reserved for changes to the plugin's
+> own behavior. Use `ci:` for workflow, CI, and tooling changes. Use
+> `chore(deps):` for dependency bumps (no release); only use `fix:` for a
+> dependency update that fixes a bug or CVE reachable through the plugin's own
+> code paths (confirm with `govulncheck ./...`). Per the Angular convention,
+> dependency changes are not `feat`/`fix` (Angular itself uses `build:`); this
+> project follows the common ecosystem default of `chore(deps):`, which is also
+> what Dependabot and Renovate emit.
 
 ### Body
 
@@ -153,7 +178,8 @@ history had to be reset to correct the damage.
 1. For non-trivial changes, open an issue first to discuss the approach.
 2. Fork the repository and create a branch from `main`.
 3. Make your changes, including tests for new behaviour.
-4. Ensure `go test ./...` and `golangci-lint run` pass locally.
+4. Ensure `go test ./...`, `make cover` (the coverage gate), and
+   `golangci-lint run` pass locally.
 5. Write commit messages following the Conventional Commits format above.
 6. Open a pull request against `main`. Keep each PR to a single logical change.
 

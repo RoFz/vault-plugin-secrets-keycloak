@@ -10,8 +10,43 @@ framework, so no external infrastructure is required.
 The tests are needed because the plugin's correctness depends on three systems
 behaving correctly together: the Vault plugin API (gRPC, storage, lease
 management), the Keycloak Admin REST API (user and credential management), and
-optionally the Vault KV v2 API (credential sync). Unit tests and Go-level mocks
-cannot fully verify these interactions.
+optionally the Vault KV v2 API (credential sync). In-process Go tests cover the
+backend logic directly (see [Testing strategy](#testing-strategy)); these
+integration tests cover the cross-system behaviour they cannot.
+
+---
+
+## Testing strategy
+
+The plugin is tested in two complementary layers, both run in CI on every push
+and pull request:
+
+- **In-process Go tests** (`make test-unit`, `make cover`): construct the backend
+  directly (`Factory` + `HandleRequest`) with in-memory storage and an `httptest`
+  stand-in for the Keycloak Admin API. Fast, deterministic, no Docker. They assert
+  the security-critical guarantees: lease revoke/renew, that secrets never leak
+  into responses/errors/logs, and KV-sync fail-safe behaviour.
+- **Integration tests** (pytest + testcontainers; the rest of this document): run
+  the real compiled plugin inside a real Vault that loads it over gRPC, against a
+  real Keycloak. They verify the cross-system behaviour in-process tests cannot.
+
+We test by **risk, not by chasing a coverage number**. The coverage policy in
+[`.testcoverage.yml`](../.testcoverage.yml) puts the highest floors on the
+security-critical files:
+
+| What | Floor |
+| --- | --- |
+| `path_credentials.go`, `client.go`, `path_config.go` | 75% |
+| `backend.go` | 70% |
+| `kv_sync.go` | 65% |
+| every other file (blanket safety net) | 60% |
+| overall total | 72% |
+
+**What the coverage badge measures:** in-process Go coverage only, which is
+deterministic. The integration suite exercises more of the code than that number
+reflects, but it is not counted: the plugin runs as a separate process that the
+Go coverage tooling cannot reliably instrument. So the badge is a floor on the
+*unit*-tested surface, not the total tested surface.
 
 ---
 
@@ -89,6 +124,25 @@ This target:
 2. Runs the full integration test suite with verbose output and a 120-second
    per-test timeout.
 
+The Vault and Keycloak image versions come from
+[tests/versions.env](versions.env), the single source of truth shared with CI.
+By default this runs the latest 2.x Vault line; override a single run with
+environment variables:
+
+```sh
+VAULT_VERSION=1.21.4 KEYCLOAK_VERSION=26.6.3 make test-integration
+```
+
+### Full version matrix
+
+```sh
+make test-integration-matrix
+```
+
+Runs the suite once per Vault line in `tests/versions.env` (latest MPL, latest
+1.x, latest 2.x) against the pinned Keycloak, mirroring the CI matrix. This is
+slower: it starts a fresh Vault + Keycloak container set per line.
+
 ### Step by step
 
 If you want to run the build and tests separately:
@@ -120,9 +174,100 @@ make test-unit
 
 Runs the Go unit tests with race detection. Does not start any containers.
 
+### Coverage
+
+```sh
+make cover
+```
+
+Generates the coverage profile and enforces the thresholds in
+[`.testcoverage.yml`](../.testcoverage.yml), the same gate CI runs. See
+[Testing strategy](#testing-strategy) for what the floors mean and what the
+badge measures. On pull requests, CI also comments with the per-file and total
+coverage delta versus main.
+
+---
+
+## Tested versions
+
+Vault and Keycloak versions are pinned as exact image tags in
+[tests/versions.env](versions.env), the single source of truth for both local
+runs and CI:
+
+| Slot | What it tracks | Allowed range |
+| --- | --- | --- |
+| `VAULT_MPL` | latest 1.14.x (last MPL-2.0 line) | fixed |
+| `VAULT_1X` | latest 1.x image | `<2.0.0` |
+| `VAULT_2X` | latest 2.x image | `>=2.0.0 <3.0.0` |
+| `KEYCLOAK` | latest Keycloak | latest |
+
+Bump a line in `versions.env` and both local and CI follow. Image tags are not
+the same as binary release versions, so pins are verified against the container
+registries (Docker Hub / quay.io), not `releases.hashicorp.com`.
+
+---
+
+## Validating a published release
+
+The targets above test the plugin built from your working tree. To instead
+validate an already-published release, exactly as a user would download it:
+
+```sh
+make release-validate TAG=v0.2.1
+```
+
+This target:
+
+1. Downloads the published `linux/amd64` binary, `checksums.txt`, and the cosign
+   signature bundle (`checksums.txt.sigstore.json`) for `TAG` from the GitHub
+   release.
+2. Verifies the bundle with `cosign verify-blob`, asserting the release
+   workflow's signing identity and the GitHub OIDC issuer (provenance), then
+   checks the binary against `checksums.txt` (integrity).
+3. Runs the full version matrix from `tests/versions.env` against that verified
+   binary.
+
+It needs two tools beyond the integration requirements: the GitHub CLI (`gh`,
+authenticated) and `cosign`.
+
+CI performs the same validation automatically. On every release publish the
+published binary is verified (cosign + checksum), tested across the full matrix,
+and a validation report (operations x versions, plus the checksum and signature
+verdict) is attached to the release as durable proof it was validated.
+
 ---
 
 ## Test structure
+
+The Go in-process tests live next to the source; the pytest integration suite is
+split across four modules. Both are described below.
+
+### Go (in-process) tests
+
+The Go tests live next to the code they cover (`*_test.go` in the package root)
+and run the backend **in-process**, no Docker, no real Vault or Keycloak:
+
+- `newTestBackend(t)` (`backend_test.go`) builds the backend via `backend()` +
+  `logical.InmemStorage{}` and drives it with `b.HandleRequest(...)`.
+- `fakeKC` (`keycloak_fake_test.go`) is a configurable, recording stand-in for
+  the Keycloak Admin REST API (`httptest`); `configureBackend` points the backend
+  at it, so the Keycloak-calling paths run without a real Keycloak.
+
+| File | Covers |
+| --- | --- |
+| `backend_test.go` | `config` & `roles` CRUD, `Factory` |
+| `backend_invalidate_test.go` | cached-client invalidation on config change |
+| `client_test.go` | Keycloak client construction & validation |
+| `keycloak_http_test.go` | `users` list/read/rotate (+ rotate KV sync) |
+| `path_credentials_test.go` | `creds` issuance, revoke/renew, secret-leak, KV fail-safe |
+| `kv_sync_test.go` | KV create-on-missing fallback |
+| `password_test.go` | password generation |
+
+When you add a Vault path or change behaviour, add an in-process test here that
+asserts the behaviour, error and security cases included, not just the happy
+path. See [Testing strategy](#testing-strategy) for the risk tiers.
+
+### Integration modules (pytest)
 
 The suite is split across four modules, each covering a distinct plugin path.
 
@@ -138,13 +283,14 @@ The suite is split across four modules, each covering a distinct plugin path.
 Session-scoped fixtures start once per `pytest` invocation and are shared
 across all modules:
 
-- `keycloak_container`: starts a Keycloak 26.5.7 container.
+- `keycloak_container`: starts a Keycloak container (version from
+  `tests/versions.env`; default 26.6.3).
 - `keycloak_realm` (autouse): creates the `test-realm` realm and two dedicated
   test users (`vault-ephemeral-user`, `vault-rotate-user`). Also creates a
   `test-client` OIDC public client used to verify that passwords are accepted
   by Keycloak.
-- `vault_container`: starts a Vault 1.21.4 dev container with the plugin
-  binary mounted at `/vault/plugins/`.
+- `vault_container`: starts a Vault dev container (version from
+  `tests/versions.env`) with the plugin binary mounted at `/vault/plugins/`.
 - `vault_client`: registers the plugin in Vault's catalog, enables it at the
   `keycloak` mount, and enables a KV v2 mount at `kv-test` for sync tests.
 - `plugin_config_params`: returns the base configuration dict. The Keycloak URL
