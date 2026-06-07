@@ -154,6 +154,10 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    # Skip on release-please PRs: they change only version/changelog, so coverage is
+    # unchanged and the comment is noise. Still runs on push to main (badge) and on
+    # normal PRs (head_ref is empty on push, so the guard passes there).
+    if: ${{ !startsWith(github.head_ref, 'release-please--branches--') }}
     permissions:
       contents: write # publish the coverage badge to the orphan 'badges' branch (main only)
       pull-requests: write # post the coverage comment on PRs
@@ -230,6 +234,8 @@ jobs:
   setup:
     name: Resolve test versions
     runs-on: ubuntu-latest
+    # The integration matrix is redundant on release-please PRs (no code change).
+    if: ${{ !startsWith(github.head_ref, 'release-please--branches--') }}
     outputs:
       vault: ${{ steps.versions.outputs.vault }}
       keycloak: ${{ steps.versions.outputs.keycloak }}
@@ -254,6 +260,7 @@ jobs:
     name: Integration Tests (Vault ${{ matrix.vault }})
     runs-on: ubuntu-latest
     needs: [build, setup]
+    if: ${{ !startsWith(github.head_ref, 'release-please--branches--') }} # skip on release-please PRs
     permissions:
       contents: read
     strategy:
@@ -324,7 +331,9 @@ jobs:
     name: Integration matrix report
     runs-on: ubuntu-latest
     needs: integration-test
-    if: always()
+    # always() so it still reports if a leg fails; skipped on release-please PRs
+    # (no matrix ran there).
+    if: ${{ always() && !startsWith(github.head_ref, 'release-please--branches--') }}
     permissions:
       contents: read
       pull-requests: write
