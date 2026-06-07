@@ -409,3 +409,18 @@ func TestConfigWithKVFields(t *testing.T) {
 		t.Errorf("expected kv_tls_skip_verify true, got %v", resp.Data["kv_tls_skip_verify"])
 	}
 }
+
+// TestFactory covers the plugin entry point Vault calls to load the backend.
+func TestFactory(t *testing.T) {
+	b, err := Factory(context.Background(), &logical.BackendConfig{
+		Logger:      hclog.NewNullLogger(),
+		System:      &logical.StaticSystemView{},
+		StorageView: &logical.InmemStorage{},
+	})
+	if err != nil {
+		t.Fatalf("Factory returned error: %v", err)
+	}
+	if b == nil {
+		t.Fatal("Factory returned a nil backend")
+	}
+}
