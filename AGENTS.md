@@ -37,6 +37,7 @@ After making changes to Go source files, instruct the user to run:
 
 - `make lint` — fast: vet, formatting, golangci-lint. Run after any Go source change.
 - `make test-unit` — unit tests with race detector. Run after any Go source change.
+- `make cover` — coverage profile + risk-based thresholds (`.testcoverage.yml`, in-process unit coverage). Run after Go source changes that affect coverage.
 - `make check-deps` — govulncheck + go-licenses. Run only when go.mod or go.sum changes.
 - `make test-integration` — integration tests against one Vault line (default from `tests/versions.env`, override with `VAULT_VERSION=...`). Requires Docker. Run when plugin behavior changes, before pushing.
 - `make test-integration-matrix` — runs the integration suite against every Vault line in `tests/versions.env` (latest MPL, latest 1.x, latest 2.x). Requires Docker; slower (one container set per line).

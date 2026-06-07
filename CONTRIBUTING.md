@@ -37,9 +37,22 @@ go build ./...
 
 ## Running Tests
 
+Fast, no Docker required:
+
 ```sh
-go test ./...
+make test-unit   # Go unit tests with the race detector
+make cover       # coverage profile + risk-based thresholds (.testcoverage.yml)
 ```
+
+Integration tests (require Docker):
+
+```sh
+make test-integration          # one Vault line
+make test-integration-matrix   # every supported Vault line
+```
+
+See [tests/TESTING.md](tests/TESTING.md) for the full testing strategy, the
+coverage policy, and setup details.
 
 ### Test policy
 

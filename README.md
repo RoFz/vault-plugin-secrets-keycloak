@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/RoFz/vault-plugin-secrets-keycloak/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RoFz/vault-plugin-secrets-keycloak/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/RoFz/vault-plugin-secrets-keycloak/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/RoFz/vault-plugin-secrets-keycloak/actions/workflows/codeql.yml)
+[![Coverage](https://raw.githubusercontent.com/RoFz/vault-plugin-secrets-keycloak/badges/.badges/main/coverage.svg)](tests/TESTING.md#testing-strategy)
 [![Release](https://img.shields.io/github/v/release/RoFz/vault-plugin-secrets-keycloak)](https://github.com/RoFz/vault-plugin-secrets-keycloak/releases/latest)
 [![Go](https://img.shields.io/badge/go-1.26-blue)](https://go.dev/doc/go1.26)
 [![License](https://img.shields.io/github/license/RoFz/vault-plugin-secrets-keycloak)](LICENSE)
@@ -117,25 +118,40 @@ exercised by the suite.
 
 ### Download pre-built binaries
 
-Pre-built binaries for Linux, macOS, Windows, and FreeBSD (amd64 and arm64
-where applicable) are published on the
+Pre-built binaries for Linux, macOS, Windows, and FreeBSD (amd64, arm64, and
+386 where applicable) are published on the
 [Releases page](https://github.com/RoFz/vault-plugin-secrets-keycloak/releases).
 
-Download the binary for your platform and verify the SHA-256 checksum from
-`checksums.txt`. The binary file name embeds the release version
+Each release is signed with [cosign](https://docs.sigstore.dev/) keyless
+signing: `checksums.txt` is signed (the signature bundle is
+`checksums.txt.sigstore.json`), and every binary is listed in `checksums.txt`.
+Verify the **signature** (provenance) first, then the **checksum** (integrity).
+The binary file name embeds the release version
 (`vault-plugin-secrets-keycloak_<version>_<os>_<arch>`), so resolve the latest
 version first:
 
 ```bash
-# Example: Linux amd64
+# Example: Linux amd64 (requires cosign and jq)
 VERSION=$(curl -fsSL https://api.github.com/repos/RoFz/vault-plugin-secrets-keycloak/releases/latest | jq -r .tag_name)
 BINARY="vault-plugin-secrets-keycloak_${VERSION#v}_linux_amd64"
 BASE="https://github.com/RoFz/vault-plugin-secrets-keycloak/releases/download/${VERSION}"
 
 curl -fLO "${BASE}/${BINARY}"
 curl -fLO "${BASE}/checksums.txt"
+curl -fLO "${BASE}/checksums.txt.sigstore.json"
+
+# 1. Provenance: verify checksums.txt was signed by this repo's release workflow.
+cosign verify-blob \
+  --bundle checksums.txt.sigstore.json \
+  --certificate-identity "https://github.com/RoFz/vault-plugin-secrets-keycloak/.github/workflows/release-please.yml@refs/heads/main" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  checksums.txt
+
+# 2. Integrity: verify the downloaded binary against the signed checksums.
 sha256sum --check --ignore-missing checksums.txt
 ```
+
+> Requires cosign v3+, where the `.sigstore.json` bundle format is the default.
 
 ### Build from source
 
@@ -520,9 +536,9 @@ Returns `{ username, password }` with a Vault lease. On lease revocation the
 password is rotated again to a discarded value, invalidating the issued
 credential. On lease renewal the TTL is extended without rotation.
 
-> **Alpha:** automatic lease expiry and revocation have not been fully
-> validated end-to-end. See the [Credential lifecycle](#credential-lifecycle)
-> section for caveats.
+> **Alpha:** the revoke/renew logic is unit-tested, but automatic lease expiry
+> and revocation have not been validated end-to-end against a live Vault lease.
+> See the [Credential lifecycle](#credential-lifecycle) section for caveats.
 
 ## Usage
 
@@ -563,8 +579,9 @@ automatic revocation. Every call is recorded in the Vault audit log
 > The plugin also implements a role-based, lease-bound issuance path
 > (`vault read keycloak/creds/<role>`) where Vault manages a TTL and
 > automatically invalidates the credential on expiry by re-rotating the
-> password to a discarded value. Automatic lease expiry and revocation
-> have not been fully validated end-to-end and are considered alpha.
+> password to a discarded value. The revoke/renew callbacks are unit-tested,
+> but automatic lease expiry and revocation have not been validated end-to-end
+> against a live Vault lease, and are considered alpha.
 > See `path_credentials.go` in the source for implementation details.
 >
 > **Alpha caveat — Vault availability at revocation time:**

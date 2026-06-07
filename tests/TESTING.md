@@ -10,8 +10,43 @@ framework, so no external infrastructure is required.
 The tests are needed because the plugin's correctness depends on three systems
 behaving correctly together: the Vault plugin API (gRPC, storage, lease
 management), the Keycloak Admin REST API (user and credential management), and
-optionally the Vault KV v2 API (credential sync). Unit tests and Go-level mocks
-cannot fully verify these interactions.
+optionally the Vault KV v2 API (credential sync). In-process Go tests cover the
+backend logic directly (see [Testing strategy](#testing-strategy)); these
+integration tests cover the cross-system behaviour they cannot.
+
+---
+
+## Testing strategy
+
+The plugin is tested in two complementary layers, both run in CI on every push
+and pull request:
+
+- **In-process Go tests** (`make test-unit`, `make cover`): construct the backend
+  directly (`Factory` + `HandleRequest`) with in-memory storage and an `httptest`
+  stand-in for the Keycloak Admin API. Fast, deterministic, no Docker. They assert
+  the security-critical guarantees: lease revoke/renew, that secrets never leak
+  into responses/errors/logs, and KV-sync fail-safe behaviour.
+- **Integration tests** (pytest + testcontainers; the rest of this document): run
+  the real compiled plugin inside a real Vault that loads it over gRPC, against a
+  real Keycloak. They verify the cross-system behaviour in-process tests cannot.
+
+We test by **risk, not by chasing a coverage number**. The coverage policy in
+[`.testcoverage.yml`](../.testcoverage.yml) puts the highest floors on the
+security-critical files:
+
+| What | Floor |
+| --- | --- |
+| `path_credentials.go`, `client.go`, `path_config.go` | 75% |
+| `backend.go` | 70% |
+| `kv_sync.go` | 65% |
+| every other file (blanket safety net) | 60% |
+| overall total | 72% |
+
+**What the coverage badge measures:** in-process Go coverage only, which is
+deterministic. The integration suite exercises more of the code than that number
+reflects, but it is not counted: the plugin runs as a separate process that the
+Go coverage tooling cannot reliably instrument. So the badge is a floor on the
+*unit*-tested surface, not the total tested surface.
 
 ---
 
@@ -138,6 +173,18 @@ make test-unit
 ```
 
 Runs the Go unit tests with race detection. Does not start any containers.
+
+### Coverage
+
+```sh
+make cover
+```
+
+Generates the coverage profile and enforces the thresholds in
+[`.testcoverage.yml`](../.testcoverage.yml), the same gate CI runs. See
+[Testing strategy](#testing-strategy) for what the floors mean and what the
+badge measures. On pull requests, CI also comments with the per-file and total
+coverage delta versus main.
 
 ---
 
