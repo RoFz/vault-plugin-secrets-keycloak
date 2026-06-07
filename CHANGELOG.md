@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.1](https://github.com/RoFz/vault-plugin-secrets-keycloak/compare/v0.2.0...v0.2.1) (2026-06-07)
+
+
+### Bug Fixes
+
+* bump github.com/jackc/pgx/v5 from 5.9.1 to 5.9.2 ([#18](https://github.com/RoFz/vault-plugin-secrets-keycloak/issues/18)) ([5150343](https://github.com/RoFz/vault-plugin-secrets-keycloak/commit/5150343e0d0319cb559de1f16d7f7f1cf8eceddd))
+* **security:** bump to go1.26.4 and x/net v0.55.0 to fix 5 CVEs ([#25](https://github.com/RoFz/vault-plugin-secrets-keycloak/issues/25)) ([18dfdd0](https://github.com/RoFz/vault-plugin-secrets-keycloak/commit/18dfdd0dcfc2c66a0e2835436320d8049d6a881f))
+* **security:** harden CI supply chain and add fuzz tests ([#26](https://github.com/RoFz/vault-plugin-secrets-keycloak/issues/26)) ([35c8c97](https://github.com/RoFz/vault-plugin-secrets-keycloak/commit/35c8c97b92b3a5a37e0373ebc84fba7c8b987ea7))
+
 ## [0.2.0](https://github.com/RoFz/vault-plugin-secrets-keycloak/compare/v0.1.1...v0.2.0) (2026-04-04)
 
 
