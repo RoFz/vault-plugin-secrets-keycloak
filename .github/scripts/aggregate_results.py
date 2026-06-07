@@ -97,7 +97,7 @@ def render(legs: list[Leg], title: str, commit: str | None, repo_url: str | None
                 failed += status == "fail"
     ok = failed == 0 and all(leg.parse_error is None for leg in legs)
 
-    out: list[str] = [f"## {title}", ""]
+    out: list[str] = [f"# {title}", ""]
     out.append(f"**Result:** {PASS + ' ' + str(total) + ' checks passed' if ok else FAIL + f' {failed} of {total} checks failed'}")
     if commit:
         short = commit[:12]
@@ -108,14 +108,14 @@ def render(legs: list[Leg], title: str, commit: str | None, repo_url: str | None
         )
     if provenance:
         sig = f"{PASS} cosign verified" if provenance.get("cosign_verified") else f"{FAIL} cosign NOT verified"
-        out += ["", "### Release artifact", ""]
+        out += ["", "## Release artifact", ""]
         out.append(f"- **Tag:** `{provenance.get('tag', '?')}`")
         out.append(f"- **Binary:** `{provenance.get('binary', '?')}`")
         out.append(f"- **SHA-256:** `{provenance.get('sha256', '?')}` (checksum verified)")
         out.append(f"- **Signature:** {sig}")
         out.append(f"  - identity: `{provenance.get('cosign_identity', '?')}`")
         out.append(f"  - issuer: `{provenance.get('cosign_issuer', '?')}`")
-    out += ["", "### Versions under test", ""]
+    out += ["", "## Versions under test", ""]
     for leg in legs:
         meta = leg.meta
         out.append(f"- **{leg.label}**")
@@ -124,7 +124,7 @@ def render(legs: list[Leg], title: str, commit: str | None, repo_url: str | None
         if leg.parse_error:
             out.append(f"  - {MISSING} results unavailable: {leg.parse_error}")
 
-    out += ["", "### Operations × versions", ""]
+    out += ["", "## Operations × versions", ""]
     out.append("| " + " | ".join(["Operation"] + [leg.label for leg in legs]) + " |")
     out.append("|---|" + "".join(":---:|" for _ in legs))
     for test_id in test_ids:
