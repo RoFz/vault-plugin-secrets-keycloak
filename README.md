@@ -151,7 +151,8 @@ cosign verify-blob \
 sha256sum --check --ignore-missing checksums.txt
 ```
 
-> Requires cosign v3+, where the `.sigstore.json` bundle format is the default.
+> The signature uses the Sigstore bundle format (`checksums.txt.sigstore.json`);
+> the command above is verified with cosign v2.4.3 and v3.0.6.
 
 ### Build from source
 
