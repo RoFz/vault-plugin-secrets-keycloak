@@ -29,6 +29,16 @@ note() {
 EOF
 }
 
+# A second note, shown only alongside the per-file table: the table is scoped by
+# coverage change, not by which files the PR edited.
+note_scope() {
+  cat <<'EOF'
+
+> [!NOTE]
+> Coverage can shift in files the PR didn't edit, so this lists every file whose coverage changed versus `main`.
+EOF
+}
+
 # Last-resort path: post the raw report so we never drop information or emit a
 # broken table if the structured data is missing or unparseable.
 fallback() {
@@ -57,6 +67,7 @@ gate_failed() { printf '%s\n' "$REPORT" | grep -qE 'satisfied:.*FAIL'; }
 pr_total="$(total_pct pr.breakdown)"
 have_base=0
 [ -s base.breakdown ] && have_base=1
+rows="" # populated when the per-file table is emitted; also gates the second note
 
 {
   echo "## Coverage"
@@ -120,8 +131,6 @@ have_base=0
         }' base.breakdown pr.breakdown)"
       if [ -n "$rows" ]; then
         echo
-        echo "_Coverage can shift in files the PR didn't edit, so this lists every file whose coverage changed versus \`main\`._"
-        echo
         echo "| File | This PR | \`main\` |"
         echo "|------|--------:|-------:|"
         printf '%s\n' "$rows"
@@ -129,4 +138,5 @@ have_base=0
     fi
   fi
   note
+  if [ -n "$rows" ]; then note_scope; fi
 } >"$OUT"
