@@ -151,6 +151,82 @@ jobs:
         with:
           version: v2.11.4
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # publish the coverage badge to the orphan 'badges' branch (main only)
+      pull-requests: write # post the coverage comment on PRs
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Same invocation as `make cover`: deterministic in-process unit coverage.
+      - name: Generate coverage profile
+        run: go test ./... -coverprofile=cover.out -covermode=atomic -coverpkg=./...
+
+      # On PRs, recompute main's coverage live (no stored baseline) so the comment
+      # can show the per-file and total delta vs main. Degrades gracefully (the
+      # comment simply omits the delta) if main can't be fetched or built.
+      - name: Regenerate main baseline (for the PR comment)
+        if: github.event_name == 'pull_request'
+        run: |
+          set +e
+          fail() { exit 0; } # no base.breakdown -> the comment script omits the delta
+          git fetch --no-tags --depth=1 origin main || fail
+          git worktree add --detach /tmp/main FETCH_HEAD || fail
+          ( cd /tmp/main && go test ./... -coverprofile=/tmp/base.out -covermode=atomic -coverpkg=./... ) || fail
+          printf 'exclude:\n  paths: ["^cmd/"]\nthreshold: {file: 0, package: 0, total: 0}\n' > /tmp/basegen.yml
+          go run github.com/vladopajic/go-test-coverage/v2@v2.18.8 \
+            --config=/tmp/basegen.yml --profile=/tmp/base.out \
+            --breakdown-file-name="$GITHUB_WORKSPACE/base.breakdown" || fail
+
+      # The PR's own breakdown feeds the comment's per-file table and totals; a
+      # failure here is non-fatal (the comment falls back to the raw report).
+      - name: Generate PR breakdown (for the PR comment)
+        if: github.event_name == 'pull_request'
+        run: |
+          printf 'profile: cover.out\nexclude:\n  paths: ["^cmd/"]\nthreshold: {file: 0, package: 0, total: 0}\n' > /tmp/prgen.yml
+          go run github.com/vladopajic/go-test-coverage/v2@v2.18.8 \
+            --config=/tmp/prgen.yml --breakdown-file-name="$GITHUB_WORKSPACE/pr.breakdown" \
+            || echo "::warning::PR breakdown generation failed; coverage comment will fall back to the raw report"
+
+      # Enforces .testcoverage.yml (the gate: total/file/overrides -> blocking) and,
+      # on main, publishes the badge to the orphan 'badges' branch. git-token is
+      # empty on PRs and forks, so nothing is pushed there. The PR delta and per-file
+      # table are built by the comment script from the breakdown files, not here.
+      - name: Check coverage
+        id: coverage
+        uses: vladopajic/go-test-coverage@a93b868a4cbcbf18dc3781650fad241f0020e609 # v2.18.8
+        with:
+          config: ./.testcoverage.yml
+          git-token: ${{ github.ref_name == 'main' && secrets.GITHUB_TOKEN || '' }}
+          git-branch: badges
+
+      # Build the PR comment from the breakdown files (per-file table + delta) plus
+      # the report (gate verdict). See .github/scripts/coverage-comment.sh.
+      - name: Build coverage comment
+        if: always() && github.event_name == 'pull_request' && steps.coverage.outputs.report != ''
+        env:
+          REPORT: ${{ fromJSON(steps.coverage.outputs.report) }}
+        run: bash .github/scripts/coverage-comment.sh
+
+      - name: Post coverage comment
+        if: always() && github.event_name == 'pull_request' && steps.coverage.outputs.report != ''
+        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0 # v3.0.4
+        with:
+          header: coverage-report
+          path: cov-comment.md
+
   setup:
     name: Resolve test versions
     runs-on: ubuntu-latest

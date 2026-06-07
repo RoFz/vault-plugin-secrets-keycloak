@@ -1,0 +1,36 @@
+# Coverage policy for `make cover` and the CI coverage gate.
+# Tool: github.com/vladopajic/go-test-coverage
+#
+# Philosophy: we test by RISK, not by chasing a number (see tests/TESTING.md,
+# "Testing strategy"). Layered floors, all blocking:
+#   - total:    guards against overall regression.
+#   - file:     a LOW blanket net so no file (or a newly added one) can crater
+#               silently. Kept low on purpose: a high blanket floor punishes
+#               plumbing and invites trivial-test gaming.
+#   - override: HIGHER floors on the security-critical files.
+# The per-PR CI comment additionally reports the +/- vs main on every PR.
+# The Go unit tests run in-process and are deterministic; the live behaviour is
+# additionally covered by the pytest integration suite, not counted here.
+
+profile: cover.out
+
+exclude:
+  paths:
+    # Plugin entry point (ServeMultiplex glue): exercised by the live
+    # integration suite, not by in-process unit tests. NOTE: exclude paths are
+    # matched against the MODULE-RELATIVE path, not the full import path.
+    - ^cmd/
+
+threshold:
+  file: 60 # blanket safety net; security-critical files get higher floors below
+  package: 0
+  total: 72 # catastrophic-regression guard; the diff (below) warns on smaller drops
+
+override:
+  # Tier-1 security-critical files: floors set just under current coverage so a
+  # regression here fails the build. Bump these up as the tests grow.
+  - { path: path_credentials\.go$, threshold: 75 } # creds + revoke/renew + KV sync
+  - { path: client\.go$, threshold: 75 } # Keycloak admin API + ROPC auth
+  - { path: path_config\.go$, threshold: 75 } # write-only secret fields
+  - { path: kv_sync\.go$, threshold: 65 } # KV write, TLS skip, token handling
+  - { path: backend\.go$, threshold: 70 } # client cache / invalidate
