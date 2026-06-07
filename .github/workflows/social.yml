@@ -10,37 +10,31 @@ jobs:
   mastodon:
     name: Post to Mastodon
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     if: github.repository == 'RoFz/vault-plugin-secrets-keycloak'
     steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # Build the message from the release notes, surfacing the meaningful changes
+      # (features + non-dependency-bump fixes) and dropping noise. Mastodon has room
+      # for the product description and the full tag set, so it passes both.
       - name: Build message
         id: msg
         env:
           TAG: ${{ github.event.release.tag_name }}
           BODY: ${{ github.event.release.body }}
           URL: ${{ github.event.release.html_url }}
+          DESC: 'HashiCorp Vault secrets engine for Keycloak. Rotate service account passwords on-demand via the Admin REST API. Cryptographically random, audit-logged, and never stored by Vault.'
+          TAGS: '#HashiCorp #Vault #Keycloak #IAM #OpenSource #DevOps #Kubernetes'
         run: |
-          # Extract up to 3 changelog bullets from the release body.
-          # Release-please formats them as: * description ([sha](url))
-          # Strip the trailing commit-hash link and convert to bullet points.
-          BULLETS=$(printf '%s' "$BODY" | tr -d '\r' | grep '^\* ' | head -3 \
-            | sed 's/ (\[.*//g; s/^\* /• /g')
-
           {
-            printf '🔐 vault-plugin-secrets-keycloak %s\n\n' "$TAG"
-            printf 'HashiCorp Vault secrets engine for Keycloak. Rotate service account'
-            printf ' passwords on-demand via the Admin REST API. Cryptographically'
-            printf ' random, audit-logged, and never stored by Vault.\n'
-            if [ -n "$BULLETS" ]; then
-              printf "\n✨ What's new:\n%s\n" "$BULLETS"
-            fi
-            printf '\n🔗 %s\n\n' "$URL"
-            printf '#HashiCorp #Vault #Keycloak #IAM #OpenSource #DevOps #Kubernetes\n'
-          } > /tmp/mastodon_msg.txt
-
-          {
-            echo "message<<EOF"
-            cat /tmp/mastodon_msg.txt
-            echo "EOF"
+            echo "message<<MSGEOF"
+            bash .github/scripts/social-message.sh 480 desc
+            echo "MSGEOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Post
@@ -55,8 +49,18 @@ jobs:
   twitter:
     name: Post to Twitter/X
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     if: github.repository == 'RoFz/vault-plugin-secrets-keycloak'
     steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # Same builder, tighter 280-char budget and no product description, so the
+      # text is spent on the meaningful changes (the release link card carries the
+      # full changelog). Defaults to the Twitter description/hashtags in the script.
       - name: Build message
         id: msg
         env:
@@ -64,27 +68,10 @@ jobs:
           BODY: ${{ github.event.release.body }}
           URL: ${{ github.event.release.html_url }}
         run: |
-          # Take the first changelog bullet as the release highlight.
-          # Truncate to 80 chars so the full message stays under 280.
-          FIRST=$(printf '%s' "$BODY" | tr -d '\r' | grep '^\* ' | head -1 \
-            | sed 's/ (\[.*//g; s/^\* //g' | cut -c1-80)
-
           {
-            if [ -n "$FIRST" ]; then
-              printf '🔐 vault-plugin-secrets-keycloak %s: %s\n\n' "$TAG" "$FIRST"
-            else
-              printf '🔐 vault-plugin-secrets-keycloak %s: Vault secrets engine for' "$TAG"
-              printf ' Keycloak. Rotate service account passwords on-demand,'
-              printf ' random, audit-logged, never stored.\n\n'
-            fi
-            printf '🔗 %s\n\n' "$URL"
-            printf '#Vault #Keycloak #IAM #OpenSource\n'
-          } > /tmp/twitter_msg.txt
-
-          {
-            echo "message<<EOF"
-            cat /tmp/twitter_msg.txt
-            echo "EOF"
+            echo "message<<MSGEOF"
+            bash .github/scripts/social-message.sh 272
+            echo "MSGEOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Post
