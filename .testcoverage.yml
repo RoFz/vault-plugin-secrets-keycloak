@@ -8,7 +8,7 @@
 #               silently. Kept low on purpose: a high blanket floor punishes
 #               plumbing and invites trivial-test gaming.
 #   - override: HIGHER floors on the security-critical files.
-# A non-blocking diff (below) additionally reports the +/- vs main on every PR.
+# The per-PR CI comment additionally reports the +/- vs main on every PR.
 # The Go unit tests run in-process and are deterministic; the live behaviour is
 # additionally covered by the pytest integration suite, not counted here.
 
@@ -34,11 +34,3 @@ override:
   - { path: path_config\.go$, threshold: 75 } # write-only secret fields
   - { path: kv_sync\.go$, threshold: 65 } # KV write, TLS skip, token handling
   - { path: backend\.go$, threshold: 70 } # client cache / invalidate
-
-# Non-blocking PR diff: report the coverage delta vs main but never fail on it
-# (the floors above are the gate). threshold -100 = tolerate any drop; it exists
-# only so the headline "Coverage difference: X%" line prints. CI supplies the
-# base breakdown per-PR via --diff-base-breakdown-file-name; it is absent locally
-# (and on main), where the diff is simply skipped.
-diff:
-  threshold: -100
