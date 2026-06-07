@@ -6,6 +6,13 @@ import (
 	"time"
 )
 
+// Fuzz scope: the plugin parses untrusted input (Keycloak API responses and Vault
+// storage entries) only via the standard library encoding/json into typed structs
+// with length-guarded access, so there is no hand-rolled parser for a fuzzer to
+// break; these targets only assert panic-safety of decoding and response formatting.
+// Add dedicated targets and a scheduled fuzz workflow only if code is later
+// introduced that parses untrusted bytes by hand.
+
 // FuzzRoleEntryJSONRoundtrip exercises the JSON decode -> toResponseData path.
 // Corrupted storage bytes reaching DecodeJSON must never cause a panic.
 func FuzzRoleEntryJSONRoundtrip(f *testing.F) {
