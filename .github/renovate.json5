@@ -7,6 +7,10 @@
   // managers here prevents duplicate PRs across the two bots.
   enabledManagers: ["custom.regex"],
 
+  // config:recommended ignores `**/tests/**` by default, but our pin file lives at
+  // tests/versions.env. Clear ignorePaths (safe: our only manager targets that file).
+  ignorePaths: [],
+
   dependencyDashboard: true,
   schedule: ["before 6am on monday"], // weekly
   minimumReleaseAge: "15 days", // let a bad image tag get pulled before we adopt it
@@ -20,7 +24,7 @@
   customManagers: [
     {
       customType: "regex",
-      managerFilePatterns: ["/^tests/versions\\.env$/"],
+      managerFilePatterns: ["tests/versions.env"],
       // Read each `# renovate:` annotation, then the value on the next line.
       matchStrings: [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: packageName=(?<packageName>\\S+))?(?: versioning=(?<versioning>\\S+))?\\s+\\w+=(?<currentValue>\\S+)",
