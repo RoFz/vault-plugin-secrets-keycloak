@@ -1,7 +1,8 @@
-.PHONY: build build-test-binary test-unit test-integration test-integration-matrix release-validate lint check-deps pre-push all clean
+.PHONY: build build-test-binary test-unit cover test-integration test-integration-matrix release-validate lint check-deps pre-push all clean
 
-BINARY_NAME := vault-plugin-secrets-keycloak
-BIN_DIR     := bin
+BINARY_NAME    := vault-plugin-secrets-keycloak
+BIN_DIR        := bin
+COVER_PROFILE  := cover.out
 
 # Release signing identity (cosign keyless via GitHub Actions OIDC), verified
 # against the published v0.2.0 bundle. Used by `make release-validate`.
@@ -32,6 +33,15 @@ build-test-binary:
 
 test-unit:
 	go test -race ./...
+
+# In-process unit-test coverage (deterministic). Generates the profile and
+# enforces the risk-based thresholds in .testcoverage.yml (per-file floors on
+# the security-critical files). See tests/TESTING.md for the strategy. The live
+# behaviour is additionally covered by the integration suite, which this number
+# does not include.
+cover:
+	go test ./... -coverprofile=$(COVER_PROFILE) -covermode=atomic -coverpkg=./...
+	go run github.com/vladopajic/go-test-coverage/v2@v2.18.8 --config=.testcoverage.yml
 
 test-integration: build-test-binary
 	. ./tests/versions.env; \
@@ -97,3 +107,4 @@ all: lint test-unit check-deps test-integration
 
 clean:
 	rm -rf $(BIN_DIR)/
+	rm -f $(COVER_PROFILE)
