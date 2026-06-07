@@ -151,6 +151,95 @@ jobs:
         with:
           version: v2.11.4
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # publish the coverage badge to the orphan 'badges' branch (main only)
+      pull-requests: write # post the coverage comment on PRs
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Same invocation as `make cover`: deterministic in-process unit coverage.
+      - name: Generate coverage profile
+        run: go test ./... -coverprofile=cover.out -covermode=atomic -coverpkg=./...
+
+      # On PRs, recompute main's coverage live (no stored baseline) so the report
+      # can show the per-file and total delta vs main. Degrades gracefully
+      # (found=false -> diff skipped) if main can't be fetched or built.
+      - name: Regenerate main baseline (for the PR diff)
+        id: base
+        if: github.event_name == 'pull_request'
+        run: |
+          set +e
+          fail() { echo "found=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          git fetch --no-tags --depth=1 origin main || fail
+          git worktree add --detach /tmp/main FETCH_HEAD || fail
+          ( cd /tmp/main && go test ./... -coverprofile=/tmp/base.out -covermode=atomic -coverpkg=./... ) || fail
+          printf 'exclude:\n  paths: ["^cmd/"]\nthreshold: {file: 0, package: 0, total: 0}\n' > /tmp/basegen.yml
+          go run github.com/vladopajic/go-test-coverage/v2@v2.18.8 \
+            --config=/tmp/basegen.yml --profile=/tmp/base.out \
+            --breakdown-file-name="$GITHUB_WORKSPACE/base.breakdown" || fail
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+      # Enforces .testcoverage.yml (the gate: total/file/overrides -> blocking). On
+      # main it also publishes the badge to the orphan 'badges' branch; git-token is
+      # empty on PRs and forks, so nothing is pushed there. On PRs it computes the
+      # non-blocking diff vs the regenerated main baseline.
+      - name: Check coverage
+        id: coverage
+        uses: vladopajic/go-test-coverage@a93b868a4cbcbf18dc3781650fad241f0020e609 # v2.18.8
+        with:
+          config: ./.testcoverage.yml
+          git-token: ${{ github.ref_name == 'main' && secrets.GITHUB_TOKEN || '' }}
+          git-branch: badges
+          # base.breakdown lives in the workspace so the action's container can read it.
+          diff-base-breakdown-file-name: ${{ steps.base.outputs.found == 'true' && 'base.breakdown' || '' }}
+
+      # Build the PR comment, dropping the cosmetic sentinel line (the -100 diff
+      # threshold keeps the diff non-blocking while still printing the headline).
+      - name: Build coverage comment
+        if: always() && github.event_name == 'pull_request' && steps.coverage.outputs.report != ''
+        env:
+          REPORT: ${{ fromJSON(steps.coverage.outputs.report) }}
+        run: |
+          # Strip the cosmetic -100 sentinel line, then format a readable comment:
+          # a headline (total + delta vs main) plus the detail in an aligned code block.
+          report="$(printf '%s\n' "$REPORT" | grep -vE 'Coverage difference threshold \(-100')"
+          total="$(printf '%s\n' "$report" | grep -oE 'Total test coverage: [0-9.]+%' | grep -oE '[0-9.]+%' | head -1)"
+          delta="$(printf '%s\n' "$report" | grep -oE 'Coverage difference: -?[0-9.]+%' | grep -oE '\-?[0-9.]+%' | head -1)"
+          {
+            echo "## Test coverage: ${total:-n/a}"
+            echo
+            if [ -n "$delta" ]; then
+              case "$delta" in -*) sign="" ;; *) sign="+" ;; esac
+              echo "Change vs \`main\`: **${sign}${delta%\%} percentage points**"
+              echo
+            fi
+            echo '```text'
+            printf '%s\n' "$report"
+            echo '```'
+            echo
+            echo "_In-process Go unit coverage; the integration suite covers more (not counted here)._"
+          } > cov-comment.md
+
+      - name: Post coverage comment
+        if: always() && github.event_name == 'pull_request' && steps.coverage.outputs.report != ''
+        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0 # v3.0.4
+        with:
+          header: coverage-report
+          path: cov-comment.md
+
   setup:
     name: Resolve test versions
     runs-on: ubuntu-latest
