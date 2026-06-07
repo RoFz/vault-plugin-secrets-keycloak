@@ -70,7 +70,7 @@ have_base=0
 rows="" # populated when the per-file table is emitted; also gates the second note
 
 {
-  echo "## Coverage"
+  echo "# Coverage"
   echo
   if gate_failed; then
     # The gate fails on a total-coverage breach, a per-file floor breach, or both.
