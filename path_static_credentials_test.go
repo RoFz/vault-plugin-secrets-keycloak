@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -1130,5 +1133,212 @@ func TestPeriodicFuncSkipsOnReplicationSecondary(t *testing.T) {
 	}
 	if len(fake.resetCalls) != 0 {
 		t.Fatalf("no rotation must run on a replication secondary, got %d calls", len(fake.resetCalls))
+	}
+}
+
+// --- KV sync retry and staleness tests (v0.3.0) ---
+
+// seedConfigWithKV stores a config pointing KV sync at the given address.
+func seedConfigWithKV(t *testing.T, storage logical.Storage, kvAddr string) {
+	t.Helper()
+	entry, err := logical.StorageEntryJSON("config", &keycloakConfig{
+		URL:                 "https://keycloak.example.com",
+		Realm:               "master",
+		MasterAdminUsername: "admin",
+		MasterAdminPassword: "secret",
+		KVMountPath:         "secret",
+		KVSecretPath:        "keycloak/users",
+		KVAPIAddr:           kvAddr,
+		KVToken:             "kv-token",
+	})
+	if err != nil {
+		t.Fatalf("config entry error: %v", err)
+	}
+	if err := storage.Put(context.Background(), entry); err != nil {
+		t.Fatalf("config store error: %v", err)
+	}
+}
+
+func TestKVSyncFailureIsRetriedByPeriodicFunc(t *testing.T) {
+	var mu sync.Mutex
+	failKV := true
+	var successes int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if failKV {
+			http.Error(w, `{"errors":["kv down"]}`, http.StatusInternalServerError)
+			return
+		}
+		successes++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":{"version":1}}`)
+	}))
+	defer srv.Close()
+
+	b, storage := newTestBackend(t)
+	seedConfigWithKV(t, storage, srv.URL)
+	fake := &fakeKeycloakClient{}
+	b.client = fake
+	ctx := context.Background()
+
+	// Create the static role: the rotation succeeds, the KV sync fails, and
+	// the credential must be stored as pending.
+	if resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "roles/kvrole",
+		Storage:   storage,
+		Data: map[string]interface{}{
+			"keycloak_username": "kv-kc",
+			"rotation_period":   1800,
+			"kv_password_key":   "kv-kc-password",
+		},
+	}); err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("role write failed: err=%v resp=%v", err, resp)
+	}
+	cred, err := getStaticCred(ctx, storage, "kvrole")
+	if err != nil || cred == nil {
+		t.Fatalf("getStaticCred error: %v", err)
+	}
+	if cred.KVSynced {
+		t.Fatal("credential must be marked kv-pending after a failed sync")
+	}
+
+	// The read surfaces the pending state.
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation,
+		Path:      "static-creds/kvrole",
+		Storage:   storage,
+	})
+	if err != nil || resp == nil || resp.IsError() {
+		t.Fatalf("static-creds read failed: err=%v resp=%v", err, resp)
+	}
+	if resp.Data["kv_synced"] != false {
+		t.Errorf("expected kv_synced=false in the response, got %v", resp.Data["kv_synced"])
+	}
+
+	// KV recovers: the next periodic tick must deliver the pending sync
+	// WITHOUT rotating the password.
+	mu.Lock()
+	failKV = false
+	mu.Unlock()
+	passwordBefore := cred.Password
+	if err := b.periodicFunc(ctx, &logical.Request{Storage: storage}); err != nil {
+		t.Fatalf("periodicFunc error: %v", err)
+	}
+
+	cred, err = getStaticCred(ctx, storage, "kvrole")
+	if err != nil || cred == nil {
+		t.Fatalf("getStaticCred error: %v", err)
+	}
+	if !cred.KVSynced {
+		t.Error("credential must be marked synced after the retry succeeds")
+	}
+	if cred.Password != passwordBefore {
+		t.Error("the KV retry must not rotate the password")
+	}
+	if len(fake.resetCalls) != 1 {
+		t.Errorf("expected only the creation rotation, got %d calls", len(fake.resetCalls))
+	}
+	mu.Lock()
+	if successes == 0 {
+		t.Error("expected at least one successful KV write")
+	}
+	mu.Unlock()
+}
+
+func TestStaticCredsReadStalenessWarningAndNextRotation(t *testing.T) {
+	b, storage, _ := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	if err := b.setRole(ctx, storage, "stale", &keycloakRoleEntry{
+		KeycloakUsername: "stale-kc",
+		RotationPeriod:   30 * time.Minute,
+	}); err != nil {
+		t.Fatalf("setRole error: %v", err)
+	}
+	lastRotation := time.Now().Add(-3 * time.Hour) // 6x the period
+	if err := setStaticCred(ctx, storage, "stale", &staticCredEntry{
+		Password:     "old-but-valid",
+		LastRotation: lastRotation,
+		KVSynced:     true,
+	}); err != nil {
+		t.Fatalf("setStaticCred error: %v", err)
+	}
+
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation,
+		Path:      "static-creds/stale",
+		Storage:   storage,
+	})
+	if err != nil || resp == nil || resp.IsError() {
+		t.Fatalf("static-creds read failed: err=%v resp=%v", err, resp)
+	}
+	if len(resp.Warnings) == 0 {
+		t.Error("expected a staleness warning for a long-overdue credential")
+	}
+	wantNext := lastRotation.Add(30 * time.Minute).Format(time.RFC3339)
+	if resp.Data["next_rotation"] != wantNext {
+		t.Errorf("expected next_rotation %q, got %v", wantNext, resp.Data["next_rotation"])
+	}
+	// No kv_password_key on the role: kv_synced must not appear.
+	if _, present := resp.Data["kv_synced"]; present {
+		t.Error("kv_synced must be omitted when the role has no kv_password_key")
+	}
+
+	// Fresh credential: no warning.
+	if err := setStaticCred(ctx, storage, "stale", &staticCredEntry{
+		Password:     "fresh",
+		LastRotation: time.Now(),
+		KVSynced:     true,
+	}); err != nil {
+		t.Fatalf("setStaticCred error: %v", err)
+	}
+	resp, err = b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.ReadOperation,
+		Path:      "static-creds/stale",
+		Storage:   storage,
+	})
+	if err != nil || resp == nil || resp.IsError() {
+		t.Fatalf("static-creds read failed: err=%v resp=%v", err, resp)
+	}
+	if len(resp.Warnings) != 0 {
+		t.Errorf("no warning expected for a fresh credential, got %v", resp.Warnings)
+	}
+}
+
+func TestRetryKVSyncStopsWhenUnconfigured(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t) // config without KV fields
+	ctx := context.Background()
+
+	role := &keycloakRoleEntry{
+		KeycloakUsername: "uncfg-kc",
+		RotationPeriod:   30 * time.Minute,
+	}
+	if err := b.setRole(ctx, storage, "uncfg", role); err != nil {
+		t.Fatalf("setRole error: %v", err)
+	}
+	// A pending entry left over from when KV sync was configured.
+	if err := setStaticCred(ctx, storage, "uncfg", &staticCredEntry{
+		Password:     "pw",
+		LastRotation: time.Now(),
+		KVSynced:     false,
+	}); err != nil {
+		t.Fatalf("setStaticCred error: %v", err)
+	}
+
+	if err := b.periodicFunc(ctx, &logical.Request{Storage: storage}); err != nil {
+		t.Fatalf("periodicFunc error: %v", err)
+	}
+
+	cred, err := getStaticCred(ctx, storage, "uncfg")
+	if err != nil || cred == nil {
+		t.Fatalf("getStaticCred error: %v", err)
+	}
+	if !cred.KVSynced {
+		t.Error("pending flag must be cleared when KV sync no longer applies")
+	}
+	if len(fake.resetCalls) != 0 {
+		t.Errorf("no rotation expected, got %d calls", len(fake.resetCalls))
 	}
 }

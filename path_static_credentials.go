@@ -15,6 +15,11 @@ import (
 type staticCredEntry struct {
 	Password     string    `json:"password"`
 	LastRotation time.Time `json:"last_rotation"`
+	// KVSynced is false while a configured KV v2 sync is still pending for
+	// this password (failed, or waiting for kv_token). The periodic sweep
+	// retries pending syncs without rotating. Always true when no KV sync
+	// applies.
+	KVSynced bool `json:"kv_synced"`
 }
 
 // getStaticCred loads the stored credential for a static role. Returns nil if none exists yet.
@@ -147,9 +152,15 @@ func (b *keycloakBackend) rotateStaticCredLocked(ctx context.Context, s logical.
 		return fmt.Errorf("error rotating password for user %q: %w", role.KeycloakUsername, err)
 	}
 
+	config, cfgErr := getConfig(ctx, s)
+	if cfgErr != nil {
+		config = nil
+	}
+
 	cred := &staticCredEntry{
 		Password:     password,
 		LastRotation: time.Now(),
+		KVSynced:     !kvSyncApplies(role, config),
 	}
 	if err := setStaticCred(ctx, s, roleName, cred); err != nil {
 		return fmt.Errorf("error storing static credential: %w", err)
@@ -160,26 +171,70 @@ func (b *keycloakBackend) rotateStaticCredLocked(ctx context.Context, s logical.
 		"keycloak_username", role.KeycloakUsername,
 	)
 
-	if role.KVPasswordKey != "" {
-		config, err := getConfig(ctx, s)
-		if err == nil && config != nil && config.KVMountPath != "" && config.KVSecretPath != "" {
-			vaultAddr := config.KVAPIAddr
-			if vaultAddr == "" {
-				vaultAddr = "https://127.0.0.1:8200"
-			}
-			if config.KVToken == "" {
-				b.Logger().Warn("kv sync skipped: kv_token not configured", "role", roleName)
-			} else if _, err := writeKVSecret(ctx, vaultAddr, config.KVToken, config.KVMountPath, config.KVSecretPath, role.KVPasswordKey, password, config.KVTLSSkipVerify); err != nil {
-				b.Logger().Error("kv sync failed after static rotation",
-					"role", roleName,
-					"keycloak_username", role.KeycloakUsername,
-					"error", err,
-				)
-			}
-		}
+	if kvSyncApplies(role, config) {
+		b.attemptKVSync(ctx, s, roleName, role, config, cred)
 	}
 
 	return nil
+}
+
+// kvSyncApplies reports whether a KV v2 sync is configured for this role.
+func kvSyncApplies(role *keycloakRoleEntry, config *keycloakConfig) bool {
+	return role.KVPasswordKey != "" && config != nil &&
+		config.KVMountPath != "" && config.KVSecretPath != ""
+}
+
+// attemptKVSync tries to PATCH the credential's password into KV v2 and, on
+// success, marks the stored entry as synced. On failure (or while kv_token is
+// missing) the entry stays pending and the periodic sweep retries it on later
+// ticks without rotating.
+func (b *keycloakBackend) attemptKVSync(ctx context.Context, s logical.Storage, roleName string, role *keycloakRoleEntry, config *keycloakConfig, cred *staticCredEntry) {
+	if config.KVToken == "" {
+		b.Logger().Debug("kv sync pending: kv_token not configured", "role", roleName)
+		return
+	}
+	vaultAddr := config.KVAPIAddr
+	if vaultAddr == "" {
+		vaultAddr = "https://127.0.0.1:8200"
+	}
+	if _, err := writeKVSecret(ctx, vaultAddr, config.KVToken, config.KVMountPath, config.KVSecretPath, role.KVPasswordKey, cred.Password, config.KVTLSSkipVerify); err != nil {
+		b.Logger().Error("kv sync failed; will retry on the next periodic tick",
+			"role", roleName,
+			"kv_secret_path", config.KVSecretPath,
+			"kv_password_key", role.KVPasswordKey,
+			"error", err,
+		)
+		return
+	}
+	cred.KVSynced = true
+	if err := setStaticCred(ctx, s, roleName, cred); err != nil {
+		b.Logger().Error("failed to mark credential as kv-synced", "role", roleName, "error", err)
+	}
+}
+
+// retryKVSync re-attempts a pending KV sync for a fresh credential. It runs
+// under the rotation lock (TryLock) so it cannot interleave with an in-flight
+// rotation's own KV write; a busy lock just skips to the next tick.
+func (b *keycloakBackend) retryKVSync(ctx context.Context, s logical.Storage, roleName string, role *keycloakRoleEntry, config *keycloakConfig) {
+	if !b.rotationLock.TryLock() {
+		return
+	}
+	defer b.rotationLock.Unlock()
+
+	cred, err := getStaticCred(ctx, s, roleName)
+	if err != nil || cred == nil || cred.KVSynced {
+		return
+	}
+	if !kvSyncApplies(role, config) {
+		// KV sync was unconfigured after the entry was written: nothing to
+		// deliver anymore, stop retrying.
+		cred.KVSynced = true
+		if err := setStaticCred(ctx, s, roleName, cred); err != nil {
+			b.Logger().Error("failed to mark credential as kv-synced", "role", roleName, "error", err)
+		}
+		return
+	}
+	b.attemptKVSync(ctx, s, roleName, role, config, cred)
 }
 
 // periodicFunc is called by Vault approximately every minute. It rotates any
@@ -262,8 +317,12 @@ func (b *keycloakBackend) periodicFunc(ctx context.Context, req *logical.Request
 		needsRotation := cred == nil || time.Since(cred.LastRotation) >= role.RotationPeriod
 		if !needsRotation {
 			// A rotation succeeded since the last failure (scheduled or
-			// manual): forget the failure history.
+			// manual): forget the failure history. If that rotation's KV sync
+			// is still pending, retry it now without rotating.
 			b.clearRotationBackoff(roleName)
+			if !cred.KVSynced {
+				b.retryKVSync(ctx, req.Storage, roleName, role, config)
+			}
 			continue
 		}
 
@@ -303,6 +362,11 @@ func (b *keycloakBackend) syncStaticCredsForUsername(ctx context.Context, s logi
 		return fmt.Errorf("failed to list roles: %w", err)
 	}
 
+	config, cfgErr := getConfig(ctx, s)
+	if cfgErr != nil {
+		config = nil
+	}
+
 	for _, roleName := range roleNames {
 		role, err := b.getRole(ctx, s, roleName)
 		if err != nil || role == nil {
@@ -315,6 +379,7 @@ func (b *keycloakBackend) syncStaticCredsForUsername(ctx context.Context, s logi
 		cred := &staticCredEntry{
 			Password:     password,
 			LastRotation: time.Now(),
+			KVSynced:     !kvSyncApplies(role, config),
 		}
 		if err := setStaticCred(ctx, s, roleName, cred); err != nil {
 			b.Logger().Error("failed to update static cred after manual rotation",
@@ -329,22 +394,8 @@ func (b *keycloakBackend) syncStaticCredsForUsername(ctx context.Context, s logi
 			"keycloak_username", username,
 		)
 
-		if role.KVPasswordKey != "" {
-			config, err := getConfig(ctx, s)
-			if err == nil && config != nil && config.KVMountPath != "" && config.KVSecretPath != "" {
-				vaultAddr := config.KVAPIAddr
-				if vaultAddr == "" {
-					vaultAddr = "https://127.0.0.1:8200"
-				}
-				if config.KVToken != "" {
-					if _, err := writeKVSecret(ctx, vaultAddr, config.KVToken, config.KVMountPath, config.KVSecretPath, role.KVPasswordKey, password, config.KVTLSSkipVerify); err != nil {
-						b.Logger().Error("kv sync failed after manual rotation",
-							"role", roleName,
-							"error", err,
-						)
-					}
-				}
-			}
+		if kvSyncApplies(role, config) {
+			b.attemptKVSync(ctx, s, roleName, role, config, cred)
 		}
 	}
 
@@ -395,14 +446,27 @@ func (b *keycloakBackend) pathStaticCredsRead(ctx context.Context, req *logical.
 		return logical.ErrorResponse("no credential available for role %q; rotation pending", roleName), nil
 	}
 
-	return &logical.Response{
+	resp := &logical.Response{
 		Data: map[string]interface{}{
 			"username":        role.KeycloakUsername,
 			"password":        cred.Password,
 			"last_rotation":   cred.LastRotation.Format(time.RFC3339),
 			"rotation_period": role.RotationPeriod.Seconds(),
+			"next_rotation":   cred.LastRotation.Add(role.RotationPeriod).Format(time.RFC3339),
 		},
-	}, nil
+	}
+	if role.KVPasswordKey != "" {
+		resp.Data["kv_synced"] = cred.KVSynced
+	}
+	// Staleness signal: well past due means autorotation has been failing
+	// (Keycloak unreachable, replication misconfiguration, ...). The password
+	// is still the last one successfully set, so it remains valid.
+	if role.RotationPeriod > 0 && time.Since(cred.LastRotation) > 2*role.RotationPeriod {
+		resp.Warnings = append(resp.Warnings, fmt.Sprintf(
+			"credential is overdue: last rotated %s ago with a rotation_period of %s; autorotation may be failing, check the Vault logs",
+			time.Since(cred.LastRotation).Round(time.Second), role.RotationPeriod))
+	}
+	return resp, nil
 }
 
 const pathStaticCredsHelpSyn = `Read the current autorotated password for a static Keycloak role.`
