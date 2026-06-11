@@ -168,6 +168,9 @@ func (b *keycloakBackend) pathRoleWrite(ctx context.Context, req *logical.Reques
 		if role.MaxTTL < role.TTL {
 			return logical.ErrorResponse("max_ttl must be greater than or equal to ttl"), nil
 		}
+		// Ephemeral roles never autorotate; drop any rotation_period left over
+		// from a previous static phase.
+		role.RotationPeriod = 0
 	} else {
 		// Static (non-ephemeral) mode: rotation_period required, ttl/max_ttl rejected.
 		if v, ok := data.GetOk("ttl"); ok && v.(int) != 0 {
@@ -182,6 +185,10 @@ func (b *keycloakBackend) pathRoleWrite(ctx context.Context, req *logical.Reques
 		if role.RotationPeriod < 30*time.Minute {
 			return logical.ErrorResponse("rotation_period is required for static roles and must be at least 30 minutes (1800s)"), nil
 		}
+		// Static roles have no lease; drop any ttl/max_ttl left over from a
+		// previous ephemeral phase.
+		role.TTL = 0
+		role.MaxTTL = 0
 	}
 
 	if v, ok := data.GetOk("kv_password_key"); ok {
@@ -193,6 +200,25 @@ func (b *keycloakBackend) pathRoleWrite(ctx context.Context, req *logical.Reques
 	// rotation paths would silently invalidate each other's passwords.
 	if resp, err := b.checkUsernameExclusive(ctx, req.Storage, name, role); err != nil || resp != nil {
 		return resp, err
+	}
+
+	// Converting static -> ephemeral abandons the managed credential: discard
+	// the live Keycloak password (unless another legacy role still maps the
+	// username) and drop the stored credential. On failure the role stays
+	// static and managed.
+	if prior != nil && !prior.Ephemeral && role.Ephemeral {
+		shared, err := b.usernameSharedByOtherRole(ctx, req.Storage, name, prior.KeycloakUsername)
+		if err != nil {
+			return nil, err
+		}
+		if !shared {
+			if err := b.discardPassword(ctx, req.Storage, prior.KeycloakUsername); err != nil {
+				return nil, fmt.Errorf("conversion to ephemeral failed: could not discard the managed password: %w", err)
+			}
+		}
+		if err := req.Storage.Delete(ctx, "static-creds/"+name); err != nil {
+			return nil, err
+		}
 	}
 
 	// A static role needs an immediate rotation when it is new (or retrying a
@@ -261,8 +287,70 @@ func (b *keycloakBackend) checkUsernameExclusive(ctx context.Context, s logical.
 	return nil, nil
 }
 
+// usernameSharedByOtherRole reports whether any role other than name maps the
+// given Keycloak username. Used to guard discard-rotations against legacy
+// storage that predates username exclusivity.
+func (b *keycloakBackend) usernameSharedByOtherRole(ctx context.Context, s logical.Storage, name, username string) (bool, error) {
+	roleNames, err := s.List(ctx, "roles/")
+	if err != nil {
+		return false, fmt.Errorf("error listing roles: %w", err)
+	}
+	for _, other := range roleNames {
+		if other == name {
+			continue
+		}
+		otherRole, err := b.getRole(ctx, s, other)
+		if err != nil {
+			return false, err
+		}
+		if otherRole != nil && otherRole.KeycloakUsername == username {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// discardPassword rotates the user's Keycloak password to a random value that
+// is never stored or returned, invalidating whatever credential was live.
+func (b *keycloakBackend) discardPassword(ctx context.Context, s logical.Storage, username string) error {
+	b.rotationLock.Lock()
+	defer b.rotationLock.Unlock()
+
+	client, err := b.getClient(ctx, s)
+	if err != nil {
+		return err
+	}
+	discarded, err := generatePassword()
+	if err != nil {
+		return fmt.Errorf("error generating discard password: %w", err)
+	}
+	return client.ResetPassword(ctx, username, discarded)
+}
+
 func (b *keycloakBackend) pathRoleDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	name := data.Get("name").(string)
+
+	// Deleting a static role discards the live Keycloak password first:
+	// nobody manages that credential afterwards, so leaving it valid would
+	// dangle an unrotated secret forever. Skipped when another (legacy) role
+	// still maps the username; deletion fails if Keycloak is unreachable so
+	// the operator can retry.
+	role, err := b.getRole(ctx, req.Storage, name)
+	if err != nil {
+		return nil, err
+	}
+	if role != nil && !role.Ephemeral {
+		shared, err := b.usernameSharedByOtherRole(ctx, req.Storage, name, role.KeycloakUsername)
+		if err != nil {
+			return nil, err
+		}
+		if !shared {
+			if err := b.discardPassword(ctx, req.Storage, role.KeycloakUsername); err != nil {
+				return nil, fmt.Errorf("refusing to delete static role %q: could not discard the managed password: %w", name, err)
+			}
+		}
+	}
+
 	if err := req.Storage.Delete(ctx, "roles/"+name); err != nil {
 		return nil, err
 	}

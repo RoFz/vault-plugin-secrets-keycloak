@@ -573,14 +573,16 @@ func TestStaticEphemeralRoundTripRotates(t *testing.T) {
 		t.Fatalf("conversion back to static failed: err=%v resp=%v", err, resp)
 	}
 
-	if len(fake.resetCalls) != 2 {
-		t.Fatalf("expected rotation on conversion back to static, got %d calls", len(fake.resetCalls))
+	// Three rotations: creation, the discard on conversion to ephemeral, and
+	// the fresh rotation on conversion back to static.
+	if len(fake.resetCalls) != 3 {
+		t.Fatalf("expected creation + discard + reconversion rotations, got %d calls", len(fake.resetCalls))
 	}
 	cred, err := getStaticCred(ctx, storage, "dave")
 	if err != nil || cred == nil {
 		t.Fatalf("expected stored credential, err=%v", err)
 	}
-	if cred.Password != fake.resetCalls[1].password {
+	if cred.Password != fake.resetCalls[2].password {
 		t.Error("stored password must come from the post-conversion rotation")
 	}
 }
@@ -729,5 +731,176 @@ func TestConcurrentRotationsKeepStorageConsistent(t *testing.T) {
 	}
 	if got, want := cred.Password, fake.lastResetPassword(t); got != want {
 		t.Error("stored password diverged from the last password set in Keycloak")
+	}
+}
+
+// --- Delete and mode-switch hygiene tests (v0.3.0) ---
+
+func TestStaticRoleDeleteDiscardsPassword(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	writeStaticRole(t, b, storage, "del", "del-kc")
+	stored, _ := getStaticCred(ctx, storage, "del")
+
+	if _, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.DeleteOperation,
+		Path:      "roles/del",
+		Storage:   storage,
+	}); err != nil {
+		t.Fatalf("role delete error: %v", err)
+	}
+
+	if len(fake.resetCalls) != 2 {
+		t.Fatalf("expected a discard rotation on delete, got %d calls", len(fake.resetCalls))
+	}
+	if fake.resetCalls[1].username != "del-kc" {
+		t.Errorf("discard must target the role's username, got %q", fake.resetCalls[1].username)
+	}
+	if stored != nil && fake.resetCalls[1].password == stored.Password {
+		t.Error("discarded password must differ from the stored credential")
+	}
+
+	role, err := b.getRole(ctx, storage, "del")
+	if err != nil || role != nil {
+		t.Errorf("role must be deleted, got role=%v err=%v", role, err)
+	}
+	cred, err := getStaticCred(ctx, storage, "del")
+	if err != nil || cred != nil {
+		t.Errorf("static credential must be deleted, got cred=%v err=%v", cred, err)
+	}
+}
+
+func TestStaticRoleDeleteFailsWhenDiscardFails(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	writeStaticRole(t, b, storage, "del2", "del2-kc")
+	fake.resetErr = fmt.Errorf("keycloak unavailable")
+
+	if _, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.DeleteOperation,
+		Path:      "roles/del2",
+		Storage:   storage,
+	}); err == nil {
+		t.Fatal("expected delete to fail when the discard rotation fails")
+	}
+
+	role, err := b.getRole(ctx, storage, "del2")
+	if err != nil || role == nil {
+		t.Errorf("role must survive a failed delete, got role=%v err=%v", role, err)
+	}
+}
+
+func TestEphemeralRoleDeleteDoesNotDiscard(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	if resp, err := updateRole(t, b, storage, "edel", map[string]interface{}{
+		"keycloak_username": "edel-kc",
+		"ephemeral":         true,
+		"ttl":               3600,
+		"max_ttl":           86400,
+	}); err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("ephemeral role write failed: err=%v resp=%v", err, resp)
+	}
+
+	if _, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.DeleteOperation,
+		Path:      "roles/edel",
+		Storage:   storage,
+	}); err != nil {
+		t.Fatalf("role delete error: %v", err)
+	}
+	if len(fake.resetCalls) != 0 {
+		t.Errorf("ephemeral role delete must not rotate, got %d calls", len(fake.resetCalls))
+	}
+}
+
+func TestStaticRoleDeleteSkipsDiscardWhenUsernameShared(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	// Legacy storage: two static roles on one username (predates exclusivity).
+	for _, name := range []string{"leg-a", "leg-b"} {
+		if err := b.setRole(ctx, storage, name, &keycloakRoleEntry{
+			KeycloakUsername: "leg-kc",
+			RotationPeriod:   30 * time.Minute,
+		}); err != nil {
+			t.Fatalf("setRole error: %v", err)
+		}
+	}
+
+	if _, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.DeleteOperation,
+		Path:      "roles/leg-a",
+		Storage:   storage,
+	}); err != nil {
+		t.Fatalf("role delete error: %v", err)
+	}
+	if len(fake.resetCalls) != 0 {
+		t.Errorf("discard must be skipped while a sibling role maps the username, got %d calls", len(fake.resetCalls))
+	}
+	if role, _ := b.getRole(ctx, storage, "leg-a"); role != nil {
+		t.Error("role must still be deleted")
+	}
+}
+
+func TestConversionToEphemeralDiscardsAndCleans(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	writeStaticRole(t, b, storage, "conv", "conv-kc")
+	if resp, err := updateRole(t, b, storage, "conv", map[string]interface{}{
+		"ephemeral": true,
+		"ttl":       3600,
+		"max_ttl":   86400,
+	}); err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("conversion to ephemeral failed: err=%v resp=%v", err, resp)
+	}
+
+	if len(fake.resetCalls) != 2 {
+		t.Fatalf("expected a discard rotation on conversion, got %d calls", len(fake.resetCalls))
+	}
+	cred, err := getStaticCred(ctx, storage, "conv")
+	if err != nil || cred != nil {
+		t.Errorf("static credential must be removed on conversion, got cred=%v err=%v", cred, err)
+	}
+
+	// Stale rotation_period must be zeroed on the persisted entry.
+	role, err := b.getRole(ctx, storage, "conv")
+	if err != nil || role == nil {
+		t.Fatalf("getRole error: %v", err)
+	}
+	if role.RotationPeriod != 0 {
+		t.Errorf("rotation_period must be zeroed after conversion, got %v", role.RotationPeriod)
+	}
+}
+
+func TestConversionToStaticZeroesLeaseFields(t *testing.T) {
+	b, storage, _ := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	if resp, err := updateRole(t, b, storage, "z", map[string]interface{}{
+		"keycloak_username": "z-kc",
+		"ephemeral":         true,
+		"ttl":               3600,
+		"max_ttl":           86400,
+	}); err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("ephemeral role write failed: err=%v resp=%v", err, resp)
+	}
+	if resp, err := updateRole(t, b, storage, "z", map[string]interface{}{
+		"ephemeral":       false,
+		"rotation_period": 1800,
+	}); err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("conversion to static failed: err=%v resp=%v", err, resp)
+	}
+
+	role, err := b.getRole(ctx, storage, "z")
+	if err != nil || role == nil {
+		t.Fatalf("getRole error: %v", err)
+	}
+	if role.TTL != 0 || role.MaxTTL != 0 {
+		t.Errorf("ttl/max_ttl must be zeroed after conversion to static, got ttl=%v max_ttl=%v", role.TTL, role.MaxTTL)
 	}
 }

@@ -151,17 +151,7 @@ func (b *keycloakBackend) secretRevoke(ctx context.Context, req *logical.Request
 		return nil, fmt.Errorf("internal data missing keycloak_username")
 	}
 
-	client, err := b.getClient(ctx, req.Storage)
-	if err != nil {
-		return nil, err
-	}
-
-	discardedPassword, err := generatePassword()
-	if err != nil {
-		return nil, fmt.Errorf("error generating revocation password: %w", err)
-	}
-
-	if err := client.ResetPassword(ctx, username, discardedPassword); err != nil {
+	if err := b.discardPassword(ctx, req.Storage, username); err != nil {
 		return nil, fmt.Errorf("error revoking credential for user %q: %w", username, err)
 	}
 
