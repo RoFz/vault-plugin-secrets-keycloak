@@ -202,20 +202,12 @@ func (b *keycloakBackend) pathRoleWrite(ctx context.Context, req *logical.Reques
 		return resp, err
 	}
 
-	// Converting static -> ephemeral abandons the managed credential: discard
-	// the live Keycloak password (unless another legacy role still maps the
-	// username) and drop the stored credential. On failure the role stays
-	// static and managed.
+	// Converting static -> ephemeral stops managing the credential: drop the
+	// stored entry (static-creds/<name> no longer serves this role). The live
+	// Keycloak password is intentionally left working, so consumers survive
+	// the conversion (continuity-first design). To revoke it instead, call
+	// users/<username>/rotate before converting.
 	if prior != nil && !prior.Ephemeral && role.Ephemeral {
-		shared, err := b.usernameSharedByOtherRole(ctx, req.Storage, name, prior.KeycloakUsername)
-		if err != nil {
-			return nil, err
-		}
-		if !shared {
-			if err := b.discardPassword(ctx, req.Storage, prior.KeycloakUsername); err != nil {
-				return nil, fmt.Errorf("conversion to ephemeral failed: could not discard the managed password: %w", err)
-			}
-		}
 		if err := req.Storage.Delete(ctx, "static-creds/"+name); err != nil {
 			return nil, err
 		}
@@ -287,31 +279,11 @@ func (b *keycloakBackend) checkUsernameExclusive(ctx context.Context, s logical.
 	return nil, nil
 }
 
-// usernameSharedByOtherRole reports whether any role other than name maps the
-// given Keycloak username. Used to guard discard-rotations against legacy
-// storage that predates username exclusivity.
-func (b *keycloakBackend) usernameSharedByOtherRole(ctx context.Context, s logical.Storage, name, username string) (bool, error) {
-	roleNames, err := s.List(ctx, "roles/")
-	if err != nil {
-		return false, fmt.Errorf("error listing roles: %w", err)
-	}
-	for _, other := range roleNames {
-		if other == name {
-			continue
-		}
-		otherRole, err := b.getRole(ctx, s, other)
-		if err != nil {
-			return false, err
-		}
-		if otherRole != nil && otherRole.KeycloakUsername == username {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 // discardPassword rotates the user's Keycloak password to a random value that
 // is never stored or returned, invalidating whatever credential was live.
+// Used only by lease revocation: invalidation-on-revoke is the defining
+// semantic of a lease. Role delete and mode conversion intentionally leave
+// the live password working (continuity-first design).
 func (b *keycloakBackend) discardPassword(ctx context.Context, s logical.Storage, username string) error {
 	b.rotationLock.Lock()
 	defer b.rotationLock.Unlock()
@@ -336,27 +308,11 @@ func (b *keycloakBackend) discardPassword(ctx context.Context, s logical.Storage
 func (b *keycloakBackend) pathRoleDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	name := data.Get("name").(string)
 
-	// Deleting a static role discards the live Keycloak password first:
-	// nobody manages that credential afterwards, so leaving it valid would
-	// dangle an unrotated secret forever. Skipped when another (legacy) role
-	// still maps the username; deletion fails if Keycloak is unreachable so
-	// the operator can retry.
-	role, err := b.getRole(ctx, req.Storage, name)
-	if err != nil {
-		return nil, err
-	}
-	if role != nil && !role.Ephemeral {
-		shared, err := b.usernameSharedByOtherRole(ctx, req.Storage, name, role.KeycloakUsername)
-		if err != nil {
-			return nil, err
-		}
-		if !shared {
-			if err := b.discardPassword(ctx, req.Storage, role.KeycloakUsername); err != nil {
-				return nil, fmt.Errorf("refusing to delete static role %q: could not discard the managed password: %w", name, err)
-			}
-		}
-	}
-
+	// Deleting a role removes Vault's state only. The last password set in
+	// Keycloak intentionally stays working so consumers survive the deletion
+	// and a Vault decommission never strands services (continuity-first
+	// design). To revoke the credential instead, rotate it first:
+	// users/<username>/rotate, then delete the role.
 	if err := req.Storage.Delete(ctx, "roles/"+name); err != nil {
 		return nil, err
 	}

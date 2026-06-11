@@ -573,16 +573,16 @@ func TestStaticEphemeralRoundTripRotates(t *testing.T) {
 		t.Fatalf("conversion back to static failed: err=%v resp=%v", err, resp)
 	}
 
-	// Three rotations: creation, the discard on conversion to ephemeral, and
-	// the fresh rotation on conversion back to static.
-	if len(fake.resetCalls) != 3 {
-		t.Fatalf("expected creation + discard + reconversion rotations, got %d calls", len(fake.resetCalls))
+	// Two rotations: creation, and the fresh rotation on conversion back to
+	// static (conversion to ephemeral leaves the password untouched).
+	if len(fake.resetCalls) != 2 {
+		t.Fatalf("expected creation + reconversion rotations, got %d calls", len(fake.resetCalls))
 	}
 	cred, err := getStaticCred(ctx, storage, "dave")
 	if err != nil || cred == nil {
 		t.Fatalf("expected stored credential, err=%v", err)
 	}
-	if cred.Password != fake.resetCalls[2].password {
+	if cred.Password != fake.resetCalls[1].password {
 		t.Error("stored password must come from the post-conversion rotation")
 	}
 }
@@ -736,12 +736,11 @@ func TestConcurrentRotationsKeepStorageConsistent(t *testing.T) {
 
 // --- Delete and mode-switch hygiene tests (v0.3.0) ---
 
-func TestStaticRoleDeleteDiscardsPassword(t *testing.T) {
+func TestStaticRoleDeleteLeavesPasswordWorking(t *testing.T) {
 	b, storage, fake := newTestBackendWithFakeClient(t)
 	ctx := context.Background()
 
 	writeStaticRole(t, b, storage, "del", "del-kc")
-	stored, _ := getStaticCred(ctx, storage, "del")
 
 	if _, err := b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.DeleteOperation,
@@ -751,14 +750,9 @@ func TestStaticRoleDeleteDiscardsPassword(t *testing.T) {
 		t.Fatalf("role delete error: %v", err)
 	}
 
-	if len(fake.resetCalls) != 2 {
-		t.Fatalf("expected a discard rotation on delete, got %d calls", len(fake.resetCalls))
-	}
-	if fake.resetCalls[1].username != "del-kc" {
-		t.Errorf("discard must target the role's username, got %q", fake.resetCalls[1].username)
-	}
-	if stored != nil && fake.resetCalls[1].password == stored.Password {
-		t.Error("discarded password must differ from the stored credential")
+	// Continuity-first: only the creation rotation, no discard on delete.
+	if len(fake.resetCalls) != 1 {
+		t.Fatalf("delete must not rotate the password, got %d calls", len(fake.resetCalls))
 	}
 
 	role, err := b.getRole(ctx, storage, "del")
@@ -771,24 +765,25 @@ func TestStaticRoleDeleteDiscardsPassword(t *testing.T) {
 	}
 }
 
-func TestStaticRoleDeleteFailsWhenDiscardFails(t *testing.T) {
+func TestStaticRoleDeleteSucceedsWhenKeycloakDown(t *testing.T) {
 	b, storage, fake := newTestBackendWithFakeClient(t)
 	ctx := context.Background()
 
 	writeStaticRole(t, b, storage, "del2", "del2-kc")
 	fake.resetErr = fmt.Errorf("keycloak unavailable")
 
+	// Delete touches Vault state only, so Keycloak availability is irrelevant.
 	if _, err := b.HandleRequest(ctx, &logical.Request{
 		Operation: logical.DeleteOperation,
 		Path:      "roles/del2",
 		Storage:   storage,
-	}); err == nil {
-		t.Fatal("expected delete to fail when the discard rotation fails")
+	}); err != nil {
+		t.Fatalf("delete must succeed while Keycloak is down, got: %v", err)
 	}
 
 	role, err := b.getRole(ctx, storage, "del2")
-	if err != nil || role == nil {
-		t.Errorf("role must survive a failed delete, got role=%v err=%v", role, err)
+	if err != nil || role != nil {
+		t.Errorf("role must be deleted, got role=%v err=%v", role, err)
 	}
 }
 
@@ -817,36 +812,7 @@ func TestEphemeralRoleDeleteDoesNotDiscard(t *testing.T) {
 	}
 }
 
-func TestStaticRoleDeleteSkipsDiscardWhenUsernameShared(t *testing.T) {
-	b, storage, fake := newTestBackendWithFakeClient(t)
-	ctx := context.Background()
-
-	// Legacy storage: two static roles on one username (predates exclusivity).
-	for _, name := range []string{"leg-a", "leg-b"} {
-		if err := b.setRole(ctx, storage, name, &keycloakRoleEntry{
-			KeycloakUsername: "leg-kc",
-			RotationPeriod:   30 * time.Minute,
-		}); err != nil {
-			t.Fatalf("setRole error: %v", err)
-		}
-	}
-
-	if _, err := b.HandleRequest(ctx, &logical.Request{
-		Operation: logical.DeleteOperation,
-		Path:      "roles/leg-a",
-		Storage:   storage,
-	}); err != nil {
-		t.Fatalf("role delete error: %v", err)
-	}
-	if len(fake.resetCalls) != 0 {
-		t.Errorf("discard must be skipped while a sibling role maps the username, got %d calls", len(fake.resetCalls))
-	}
-	if role, _ := b.getRole(ctx, storage, "leg-a"); role != nil {
-		t.Error("role must still be deleted")
-	}
-}
-
-func TestConversionToEphemeralDiscardsAndCleans(t *testing.T) {
+func TestConversionToEphemeralCleansStorageOnly(t *testing.T) {
 	b, storage, fake := newTestBackendWithFakeClient(t)
 	ctx := context.Background()
 
@@ -859,8 +825,10 @@ func TestConversionToEphemeralDiscardsAndCleans(t *testing.T) {
 		t.Fatalf("conversion to ephemeral failed: err=%v resp=%v", err, resp)
 	}
 
-	if len(fake.resetCalls) != 2 {
-		t.Fatalf("expected a discard rotation on conversion, got %d calls", len(fake.resetCalls))
+	// Continuity-first: only the creation rotation, no discard on conversion;
+	// the live password keeps working while Vault stops managing it.
+	if len(fake.resetCalls) != 1 {
+		t.Fatalf("conversion must not rotate the password, got %d calls", len(fake.resetCalls))
 	}
 	cred, err := getStaticCred(ctx, storage, "conv")
 	if err != nil || cred != nil {
