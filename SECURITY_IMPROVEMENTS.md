@@ -161,7 +161,7 @@ role delete). Failures never consume the rotation schedule: the role stays
 overdue and the next allowed attempt rotates, so recovery is exactly one
 catch-up rotation per role, never a burst.
 
-### 8. [ ] Replication-state guard and early exits in periodicFunc
+### 8. [x] Replication-state guard and early exits in periodicFunc (done 2026-06-11, commit 51cfdfd)
 
 - File: `path_static_credentials.go` (`periodicFunc`)
 - Fix:
@@ -172,7 +172,7 @@ catch-up rotation per role, never a burst.
   - Return early when no config is stored, instead of logging a `getClient`
     failure per overdue role per minute.
 
-### 9. [ ] KV sync retry and staleness signalling
+### 9. [x] KV sync retry and staleness signalling (done 2026-06-11, commit 6229217)
 
 - Files: `path_static_credentials.go`, `path_roles.go` (entry struct)
 - Problems: a failed KV sync after a successful Keycloak rotation leaves the

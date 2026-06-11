@@ -500,7 +500,8 @@ Error examples:
 - `periodic: keycloak_username is mapped by multiple roles; skipping rotation`
 - `failed to sync static creds after manual rotation`
 - `kv sync failed after password rotation` (ephemeral / on-demand paths)
-- `kv sync failed after static rotation` (autorotation path)
+- `kv sync failed; will retry on the next periodic tick` (static roles; the
+  pending sync is retried automatically without rotating)
 
 ## API reference
 
@@ -686,6 +687,13 @@ no credential has been stored yet (rotation pending).
 | `password` | Current password. Valid until the next rotation. |
 | `last_rotation` | RFC 3339 timestamp of the most recent rotation. |
 | `rotation_period` | Configured rotation interval in seconds. |
+| `next_rotation` | RFC 3339 timestamp of the next scheduled rotation. |
+| `kv_synced` | Only when the role has a `kv_password_key`: whether this password has been delivered to the KV v2 secret. `false` means the sync is pending and is retried every tick. |
+
+The read attaches a **warning** when the credential is more than twice its
+`rotation_period` overdue: the password is still the last one successfully
+set (and still valid), but autorotation has been failing and the Vault logs
+should be checked.
 
 ### `creds/<name>`
 
@@ -799,6 +807,13 @@ exactly **one** catch-up rotation runs per overdue role: missed rotations are
 never queued and never replay in a burst. A scheduled rotation that finds
 another rotation already in flight skips without blocking and retries on a
 later tick.
+
+KV sync failures are tracked separately: if the rotation succeeded but the
+KV v2 PATCH did not, the credential is stored with `kv_synced=false` and the
+sweep retries just the KV delivery on every tick, without rotating, until it
+lands (including the case where `kv_token` was missing and is configured
+later). The background task runs only on the primary cluster's active node;
+DR and performance secondaries skip it.
 
 All rotation paths (scheduled, manual, and role-write) are serialized behind
 a single rotation lock, so the password stored in Vault is always the one
