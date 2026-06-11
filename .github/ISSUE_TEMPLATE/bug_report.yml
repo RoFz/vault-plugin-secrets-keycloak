@@ -1,87 +1,58 @@
-name: Bug Report
-description: Report a bug or unexpected behaviour in the plugin.
-labels: ['bug']
+name: Bug report
+description: Report incorrect plugin behaviour
+labels: ["bug"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Thanks for taking the time to report a bug! Please fill in as much
-        detail as possible to help reproduce and fix the issue.
-
-        > **Security issue?** Do not open a public issue — use the
-        > [Security Advisory](https://github.com/RoFz/vault-plugin-secrets-keycloak/security/advisories/new)
-        > instead.
-
   - type: input
     id: plugin-version
     attributes:
       label: Plugin version
-      description: Output of `vault plugin info secret vault-plugin-secrets-keycloak` or the release tag.
-      placeholder: 'e.g. v0.1.0'
+      placeholder: v0.3.0
     validations:
       required: true
-
   - type: input
     id: vault-version
     attributes:
       label: Vault version
-      description: Output of `vault version`.
-      placeholder: 'e.g. Vault v1.18.0'
+      placeholder: "1.21.4"
     validations:
       required: true
-
   - type: input
     id: keycloak-version
     attributes:
       label: Keycloak version
-      placeholder: 'e.g. 26.0.0'
+      placeholder: "26.6.3"
     validations:
       required: true
-
-  - type: input
-    id: os-arch
-    attributes:
-      label: OS / architecture
-      placeholder: 'e.g. linux/amd64, darwin/arm64'
-    validations:
-      required: true
-
   - type: textarea
-    id: description
+    id: reproduction
     attributes:
-      label: What happened?
-      description: A clear description of the bug.
+      label: Steps to reproduce
+      description: Exact vault CLI commands or API calls, in order.
+      placeholder: |
+        1. vault write keycloak/config ...
+        2. vault write keycloak/roles/app ...
+        3. vault read keycloak/static-creds/app
     validations:
       required: true
-
   - type: textarea
     id: expected
     attributes:
-      label: What did you expect?
+      label: Expected behaviour
     validations:
       required: true
-
   - type: textarea
-    id: steps
+    id: actual
     attributes:
-      label: Steps to reproduce
-      description: Minimal steps to reproduce the issue.
-      placeholder: |
-        1. Register plugin with `vault plugin register ...`
-        2. Mount it at `vault secrets enable ...`
-        3. Run `vault write ...`
-        4. See error
+      label: Actual behaviour
+      description: Include the error message or response verbatim.
     validations:
       required: true
-
   - type: textarea
     id: logs
     attributes:
-      label: Relevant logs or error output
-      description: Paste relevant Vault audit log entries or stderr output.
+      label: Relevant Vault log lines
+      description: >
+        See the "Expected logs" section of the README for the messages the
+        plugin emits. Redact anything sensitive; never paste passwords or
+        tokens.
       render: text
-
-  - type: textarea
-    id: additional
-    attributes:
-      label: Additional context
