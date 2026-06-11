@@ -48,6 +48,7 @@ audit-logged through Vault.
     - [Create and use an ephemeral role](#create-and-use-an-ephemeral-role)
     - [Rotate on demand](#rotate-on-demand)
   - [Credential lifecycle](#credential-lifecycle)
+  - [Security model](#security-model)
   - [Contributing](#contributing)
   - [Security](#security)
   - [License](#license)
@@ -479,6 +480,11 @@ All paths below are relative to the mount point (default `keycloak/`).
 Configure the Keycloak backend. The plugin authenticates as an admin user
 via the Resource Owner Password Credentials (ROPC) grant.
 
+Writes are validated: `url`, `master_admin_username`, and
+`master_admin_password` must be present on the merged configuration, so an
+incomplete config can never be stored. Partial updates that only touch
+optional fields keep the stored required fields.
+
 | Method | Vault CLI |
 | --- | --- |
 | Create / Update | `vault write keycloak/config ...` |
@@ -504,8 +510,9 @@ via the Resource Owner Password Credentials (ROPC) grant.
 ### `roles/<name>`
 
 Map a Vault role name to a Keycloak username. A role is either **static**
-(autorotated, default) or **ephemeral** (lease-bound). The mode is set once
-by the `ephemeral` flag and cannot be mixed.
+(autorotated, default) or **ephemeral** (lease-bound), selected by the
+`ephemeral` flag. A role can be converted between modes by rewriting it; see
+**Mode conversion** below for what happens to the managed password.
 
 | Method | Vault CLI |
 | --- | --- |
@@ -536,15 +543,47 @@ by the `ephemeral` flag and cannot be mixed.
 | `ephemeral=true` and `max_ttl` missing | Error |
 | `ephemeral=true` and `max_ttl` < `ttl` | Error |
 | `ephemeral=true` and `rotation_period` provided | Error |
+| `keycloak_username` already mapped by a static role | Error |
+| writing a static role whose `keycloak_username` is mapped by any other role | Error |
 
-**On static role creation:** the plugin immediately performs one rotation so
-`static-creds/<name>` is readable straight away. If Keycloak is unreachable
-at that moment, role creation fails and the role is not stored.
+**Username exclusivity:** a Keycloak username may be shared only between
+ephemeral roles (the pre-v0.3.0 behaviour). A static role's username must not
+be mapped by any other role: independent rotation paths on one account would
+silently invalidate each other's stored password. Conflicting role pairs that
+already exist in storage from older versions are not autorotated; the plugin
+logs an error and skips them until the conflict is resolved.
 
-**Backward compatibility:** roles written by v0.1.x / v0.2.0 (which have
-`ttl`/`max_ttl` but no `ephemeral` or `rotation_period` field) are
-automatically treated as `ephemeral=true` and continue to work with
-`creds/<name>` unchanged.
+**Immediate rotation on write:** the plugin performs one rotation, before the
+role is persisted, whenever the write creates a static role, changes a static
+role's `keycloak_username`, or converts a role to static. This guarantees
+`static-creds/<name>` is readable straight away and always returns a
+username/password pair that is actually set in Keycloak. If Keycloak is
+unreachable, the write fails and the previous role definition (if any) is left
+untouched. Note the consequence: **writing a static role immediately replaces
+the target user's existing password.**
+
+**Mode conversion:**
+
+- *Ephemeral to static*: the role is rotated immediately (see above); stale
+  `ttl`/`max_ttl` values are cleared.
+- *Static to ephemeral*: the managed password is rotated to a **discarded**
+  value (never stored or returned) and the stored credential is deleted; the
+  stale `rotation_period` is cleared. The conversion fails, leaving the role
+  static and managed, if Keycloak is unreachable.
+
+**On delete:** deleting a static role also rotates the user's password to a
+discarded value: nobody manages that credential afterwards, so leaving it
+valid would dangle an unrotated secret forever. The delete fails if Keycloak
+is unreachable (retry once it is back). Deleting an ephemeral role does not
+rotate; outstanding leases keep their own revocation lifecycle. The discard is
+skipped when another (pre-v0.3.0) role still maps the same username.
+
+**Backward compatibility:** every role written by v0.1.x / v0.2.x (no
+`ephemeral` or `rotation_period` field, regardless of its `ttl` values) is
+automatically treated as `ephemeral=true`: it keeps working with
+`creds/<name>` unchanged and is **never** autorotated. To opt a legacy role
+into autorotation, rewrite it with `ephemeral=false` (or omit `ephemeral`)
+and a `rotation_period`.
 
 ### `users/`
 
@@ -705,7 +744,14 @@ If so, it:
 4. Optionally PATCHes the KV v2 secret.
 
 If Vault was down and a rotation became overdue, it is performed immediately
-on the next tick (catch-up logic).
+on the next tick (catch-up logic). If the plugin crashes between setting the
+password in Keycloak and storing it, the overdue check still holds on the
+next tick and the rotation simply runs again.
+
+All rotation paths (scheduled, manual, and role-write) are serialized behind
+a single rotation lock, so the password stored in Vault is always the one
+last set in Keycloak; two interleaved rotations can never leave storage and
+Keycloak disagreeing.
 
 Calling `users/<username>/rotate` on a username that belongs to one or more
 static roles resets those roles' autorotation timers to now, so the next
@@ -734,6 +780,31 @@ rotated to a discarded value, invalidating it on both sides.
 one-shot rotation. The returned password remains valid in Keycloak until
 the next explicit call. Vault retains no record of it. Every call is recorded
 in the Vault audit log (caller identity, mount path, timestamp).
+
+## Security model
+
+Facts worth knowing before granting policies on this mount:
+
+- **Static role passwords are stored in Vault storage.** This is inherent to
+  static roles (the same password must be served until the next rotation).
+  Entries live under `static-creds/*`, are encrypted by Vault's storage
+  barrier, and are declared for [seal wrapping](https://developer.hashicorp.com/vault/docs/enterprise/sealwrap)
+  (extra HSM-backed encryption on Vault Enterprise). Ephemeral credentials
+  are never stored.
+- **Write access to `roles/*` is a password-reset capability.** Creating or
+  rewriting a static role immediately replaces the target user's password in
+  Keycloak. Grant `create`/`update` on `roles/*` only to operators who may
+  reset the mapped accounts' passwords.
+- **Deleting a static role invalidates its password** (discard rotation), so
+  `delete` on `roles/*` is also a credential-invalidation capability.
+- **The configured admin credential is high-value.** The plugin authenticates
+  with a named admin via the ROPC grant. Use a dedicated service account with
+  the narrowest role that can manage users in the target realm, not a full
+  master admin. The password and `kv_token` are never returned by config
+  reads and the config entry is seal-wrapped.
+- **Every rotation is audit-logged** by Vault (caller identity, mount path,
+  timestamp), and the plugin logs each rotation with role and username
+  (never the password).
 
 ## Contributing
 
