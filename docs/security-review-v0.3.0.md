@@ -1,17 +1,18 @@
-# Security Improvements Plan: feat/autorotation
+# Security review: static roles and autorotation (v0.3.0)
 
-Source: full-source security review of the `feat/autorotation` branch (2026-06-11).
-Scope: all findings must be resolved on this branch before the v0.3.0 PR opens.
-Steps are numbered in execution order, which follows priority: P0 (critical,
-blocking) -> P1 (high) -> P2 (hardening) -> P3 (tests, docs, release hygiene).
-
-Status legend: [ ] pending, [x] done.
+Record of the full-source security review of the `feat/autorotation` branch,
+conducted and fully resolved on 2026-06-11, before the v0.3.0 release. Every
+finding below was fixed on the branch and verified (see the final gate in
+step 12). Steps are numbered in execution order, which followed priority:
+P0 (critical) -> P1 (high) -> P2 (hardening) -> P3 (tests, docs, release
+hygiene). Commits are referenced by subject; the full sequence is visible in
+the v0.3.0 pull request.
 
 ---
 
 ## P0: Critical (fix first, each is a blocker)
 
-### 1. [x] Rebase onto main (done 2026-06-11; backup: `backup/feat-autorotation-pre-rebase`, local only)
+### 1. Rebase onto main (done 2026-06-11; backup: `backup/feat-autorotation-pre-rebase`, local only)
 
 Prerequisite for everything else (plan.md Step 8). Resolve all `.devcontainer/*`
 conflicts in favour of main (plan.md Step 7), merge both sides of
@@ -19,7 +20,7 @@ conflicts in favour of main (plan.md Step 7), merge both sides of
 go.mod conflict; the branch never touched go.mod (PeriodicFunc replaced cron),
 so no go.mod/go.sum conflict will occur.
 
-### 2. [x] Fix the legacy-role autorotation storm (done 2026-06-11, commit a6e6ebd)
+### 2. Fix the legacy-role autorotation storm (done 2026-06-11, commit "fix(autorotation): never autorotate legacy roles without rotation_period")
 
 - Files: `path_roles.go` (compat shim, lines 245-251), `path_static_credentials.go` (`periodicFunc`, line 119)
 - Problem: roles created on v0.1.x/v0.2.x without an explicit `ttl`
@@ -36,7 +37,7 @@ so no go.mod/go.sum conflict will occur.
   field; assert it is ephemeral, never rotated by `periodicFunc`, and still
   usable via `creds/<role>`.
 
-### 3. [x] Fix the typed-nil client panic (done 2026-06-11, commit bed6128)
+### 3. Fix the typed-nil client panic (done 2026-06-11, commit "fix(config): reject incomplete configs and never cache a typed-nil client")
 
 - Files: `backend.go` (line 97), `path_config.go` (`pathConfigWrite`)
 - Problem: `b.client, err = newClient(config)` stores a nil `*keycloakClient`
@@ -58,7 +59,7 @@ so no go.mod/go.sum conflict will occur.
 
 ## P1: High (correctness and credential-integrity bugs)
 
-### 4. [x] Restructure role write: validate -> rotate -> persist (done 2026-06-11, commit 79153c0)
+### 4. Restructure role write: validate -> rotate -> persist (done 2026-06-11, commit "fix(roles): rotate before persisting so failed writes leave prior state intact")
 
 - File: `path_roles.go` (`pathRoleWrite`, lines 189-207)
 - Problems:
@@ -75,7 +76,7 @@ so no go.mod/go.sum conflict will occur.
 - Test: failed rotation on an update leaves the previous role intact;
   username change triggers immediate rotation and a matching cred pair.
 
-### 5. [x] Enforce username uniqueness across roles (done 2026-06-11, commit e7bae42; periodic warn-and-skip default applied)
+### 5. Enforce username uniqueness across roles (done 2026-06-11, commit "fix(roles): enforce keycloak_username exclusivity across role modes"; periodic warn-and-skip default applied)
 
 - File: `path_roles.go` (`pathRoleWrite`)
 - Problem: nothing prevents one Keycloak username from being mapped by multiple
@@ -94,7 +95,7 @@ so no go.mod/go.sum conflict will occur.
 - Test: rejection matrix for all four combinations; upgrade fixture with a
   pre-existing conflict.
 
-### 6. [x] Serialize rotations with a lock (done 2026-06-11, commit 4af93e8)
+### 6. Serialize rotations with a lock (done 2026-06-11, commit "fix(autorotation): serialize rotations so storage cannot diverge from Keycloak")
 
 - Files: `path_static_credentials.go` (`rotateStaticCred`,
   `syncStaticCredsForUsername`), `path_users.go` (`pathUsersRotate`)
@@ -112,7 +113,7 @@ so no go.mod/go.sum conflict will occur.
 
 ## P2: Hardening
 
-### 7. [x] Mode-switch and delete hygiene (REVISED 2026-06-11, commit e709cd4)
+### 7. Mode-switch and delete hygiene (REVISED 2026-06-11, commit "fix(roles): leave passwords operational on role delete and mode conversion")
 
 DECISION REVISED (user, 2026-06-11): continuity-first design. The original
 intent of the plugin is that Keycloak credentials remain operational if Vault
@@ -121,7 +122,7 @@ clean up Vault state ONLY (role entry, stored credential, stale fields); the
 live Keycloak password intentionally keeps working. Discard-rotation applies
 ONLY to lease revocation (defining lease semantic). Revocation on demand is
 composable: users/<username>/rotate, then delete. The earlier strict variant
-(2c99130, discard on both) was superseded by e709cd4. Documented in README
+("fix(roles): discard the managed password on static role delete and mode switch", discard on both) was superseded by "fix(roles): leave passwords operational on role delete and mode conversion". Documented in README
 (security model, roles reference, lifecycle diagram).
 
 - File: `path_roles.go`
@@ -137,20 +138,20 @@ composable: users/<username>/rotate, then delete. The earlier strict variant
   (recommended: yes to both). If declined, document the dangling-password
   behaviour prominently instead.
 
-### 7a. [x] Config identity-change warning (added 2026-06-11, commit bd5cd31)
+### 7a. Config identity-change warning (added 2026-06-11, commit "feat(config): warn when the keycloak identity changes while roles exist")
 
 Changing url or the effective target realm while roles exist re-points every
 role's username at the new target (dangerous when the same username exists in
 both realms). Config writes now return a Vault warning listing the change and
 the role count. Documented in the README config section.
 
-### 7b. [x] Defer queued scheduled rotations after a manual rotation (added 2026-06-11, commit 89e25e1)
+### 7b. Defer queued scheduled rotations after a manual rotation (added 2026-06-11, commit "fix(autorotation): defer a queued scheduled rotation after a manual rotation")
 
 A scheduled rotation that was already in flight when a manual rotation
 completed now re-checks last_rotation under the rotation lock and skips, so
 the schedule always restarts from the manual rotation timestamp.
 
-### 7c. [x] Non-blocking sweep and failure backoff (added 2026-06-11)
+### 7c. Non-blocking sweep and failure backoff (added 2026-06-11)
 
 Flaky-Keycloak hardening (user-requested after the lock-contention review):
 the periodic sweep never blocks on the rotation lock (TryLock; busy means a
@@ -161,7 +162,7 @@ role delete). Failures never consume the rotation schedule: the role stays
 overdue and the next allowed attempt rotates, so recovery is exactly one
 catch-up rotation per role, never a burst.
 
-### 8. [x] Replication-state guard and early exits in periodicFunc (done 2026-06-11, commit 69fc894)
+### 8. Replication-state guard and early exits in periodicFunc (done 2026-06-11, commit "fix(autorotation): guard periodicFunc against replication secondaries and missing config")
 
 - File: `path_static_credentials.go` (`periodicFunc`)
 - Fix:
@@ -172,7 +173,7 @@ catch-up rotation per role, never a burst.
   - Return early when no config is stored, instead of logging a `getClient`
     failure per overdue role per minute.
 
-### 9. [x] KV sync retry and staleness signalling (done 2026-06-11, commit dd8b091)
+### 9. KV sync retry and staleness signalling (done 2026-06-11, commit "fix(autorotation): retry pending KV syncs and surface credential staleness")
 
 - Files: `path_static_credentials.go`, `path_roles.go` (entry struct)
 - Problems: a failed KV sync after a successful Keycloak rotation leaves the
@@ -189,7 +190,7 @@ catch-up rotation per role, never a burst.
 
 ## P3: Tests, docs, release hygiene
 
-### 10. [x] Integration coverage for autorotation (done 2026-06-11, commits 4cd3cc7 + a0834bf)
+### 10. Integration coverage for autorotation (done 2026-06-11, commits "test(integration): cover static roles, autorotation semantics, and mode conversion" + "test(fuzz): guard the rotation-storm invariant and static credential decoding")
 
 DONE. Note: plan.md Step 9's cherry-pick instructions were stale (that branch
 predates the rebase and would have regressed main's newer test infra:
@@ -206,7 +207,7 @@ legacy-upgrade fixture, mode-switch flows, shared-username rejection, manual
 rotate resets the timer. Keep unit coverage above the `.testcoverage.yml`
 floors (`make cover`).
 
-### 11. [x] Documentation: security model and upgrade notes (branch side DONE across the fix commits; REMAINING: the stale "never stored by Vault" claim in .github/workflows/social.yml lives on MAIN, route via the docs/ci PR convention after this branch merges)
+### 11. Documentation: security model and upgrade notes (branch side DONE across the fix commits; REMAINING: the stale "never stored by Vault" claim in .github/workflows/social.yml lives on MAIN, route via the docs/ci PR convention after this branch merges)
 
 - README: security-model section covering: static passwords are stored in
   Vault storage (plaintext within the barrier, `static-creds/*` is
@@ -219,7 +220,7 @@ floors (`make cover`).
   `.github/workflows/social.yml` (on main; route per the docs-PR convention).
 - Update plan.md: drop the stale robfig/cron conflict row from Step 8.
 
-### 12. [x] Final verification gate (run 2026-06-11 on the host; CI re-validates with pinned tooling on the PR)
+### 12. Final verification gate (run 2026-06-11 on the host; CI re-validates with pinned tooling on the PR)
 
 RESULTS (2026-06-11): make pre-push GREEN (golangci-lint 0 issues, unit tests
 with race detector ok, govulncheck no vulnerabilities, go-licenses clean);

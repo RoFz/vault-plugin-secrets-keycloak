@@ -42,3 +42,11 @@ This policy was shaped by the following sources:
 - [GitHub Docs — Using private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing/privately-reporting-a-security-vulnerability)
 - [goreleaser/goreleaser — SECURITY.md](https://github.com/goreleaser/goreleaser/blob/main/SECURITY.md) (pattern reference)
 - [HashiCorp security disclosure policy](https://www.hashicorp.com/security)
+
+## Security reviews
+
+Internal security reviews of major features are documented in the repository:
+
+- [Static roles and autorotation (v0.3.0)](docs/security-review-v0.3.0.md):
+  full-source review of the autorotation feature; all findings resolved
+  before release.
