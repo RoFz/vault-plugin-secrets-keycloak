@@ -112,7 +112,17 @@ so no go.mod/go.sum conflict will occur.
 
 ## P2: Hardening
 
-### 7. [x] Mode-switch and delete hygiene (done 2026-06-11, commit 211dee0; decision: discard-rotate on BOTH delete and conversion, guarded for legacy shared usernames)
+### 7. [x] Mode-switch and delete hygiene (REVISED 2026-06-11, commit 0bab367)
+
+DECISION REVISED (user, 2026-06-11): continuity-first design. The original
+intent of the plugin is that Keycloak credentials remain operational if Vault
+is decommissioned. Therefore role delete and static-to-ephemeral conversion
+clean up Vault state ONLY (role entry, stored credential, stale fields); the
+live Keycloak password intentionally keeps working. Discard-rotation applies
+ONLY to lease revocation (defining lease semantic). Revocation on demand is
+composable: users/<username>/rotate, then delete. The earlier strict variant
+(211dee0, discard on both) was superseded by 0bab367. Documented in README
+(security model, roles reference, lifecycle diagram).
 
 - File: `path_roles.go`
 - Problems: static -> ephemeral leaves the `static-creds/<name>` entry (a
@@ -126,6 +136,19 @@ so no go.mod/go.sum conflict will occur.
 - Decision needed: confirm discard-rotation on delete and on switch
   (recommended: yes to both). If declined, document the dangling-password
   behaviour prominently instead.
+
+### 7a. [x] Config identity-change warning (added 2026-06-11, commit e561efb)
+
+Changing url or the effective target realm while roles exist re-points every
+role's username at the new target (dangerous when the same username exists in
+both realms). Config writes now return a Vault warning listing the change and
+the role count. Documented in the README config section.
+
+### 7b. [x] Defer queued scheduled rotations after a manual rotation (added 2026-06-11, commit e84f144)
+
+A scheduled rotation that was already in flight when a manual rotation
+completed now re-checks last_rotation under the rotation lock and skips, so
+the schedule always restarts from the manual rotation timestamp.
 
 ### 8. [ ] Replication-state guard and early exits in periodicFunc
 

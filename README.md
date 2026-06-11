@@ -20,6 +20,10 @@ audit-logged through Vault.
   - [What this plugin does](#what-this-plugin-does)
   - [What this plugin does not do](#what-this-plugin-does-not-do)
   - [Process flow](#process-flow)
+    - [Static role (autorotation)](#static-role-autorotation)
+    - [Static role lifecycle (write / convert / delete)](#static-role-lifecycle-write--convert--delete)
+    - [Ephemeral role](#ephemeral-role)
+    - [On-demand rotation](#on-demand-rotation)
   - [Compatibility](#compatibility)
   - [Installation](#installation)
     - [Download pre-built binaries](#download-pre-built-binaries)
@@ -48,6 +52,9 @@ audit-logged through Vault.
     - [Create and use an ephemeral role](#create-and-use-an-ephemeral-role)
     - [Rotate on demand](#rotate-on-demand)
   - [Credential lifecycle](#credential-lifecycle)
+    - [Static roles (autorotation)](#static-roles-autorotation)
+    - [Ephemeral roles](#ephemeral-roles)
+    - [Fire-and-forget rotation](#fire-and-forget-rotation)
   - [Security model](#security-model)
   - [Contributing](#contributing)
   - [Security](#security)
@@ -113,16 +120,12 @@ flowchart TD
   B -->|new static role, username changed, or converted to static| D[Rotate password FIRST]
   D -->|rotation fails| E[Error: prior role left untouched]
   D -->|ok| F[Persist role]
-  B -->|converted to ephemeral| G[Discard live password + delete stored credential]
-  G -->|discard fails| H[Error: role stays static and managed]
-  G -->|ok| F
+  B -->|converted to ephemeral| G[Delete stored credential only]
+  G --> F
   B -->|update, no rotation needed| F
 
-  I[Operator deletes roles/name] --> J{Static role?}
-  J -->|yes| K[Discard live password]
-  K -->|Keycloak unreachable| L[Error: role kept, retry later]
-  K -->|ok| M[Delete role + stored credential]
-  J -->|no: ephemeral| M
+  I[Operator deletes roles/name] --> J[Delete role + stored credential]
+  J --> K[Last Keycloak password stays valid: continuity-first]
 ```
 
 ### Ephemeral role
@@ -482,8 +485,8 @@ Operational/healthy examples:
 - `password rotated successfully` with fields such as `role` and `keycloak_username`
 - `static credential rotated` with fields such as `role` and `keycloak_username`
 - `static cred timer reset after manual rotation` with fields such as `role` and `keycloak_username`
-- `managed password discarded` with the field `keycloak_username` (static role
-  deleted, converted to ephemeral, or an ephemeral lease revoked)
+- `managed password discarded` with the field `keycloak_username` (an
+  ephemeral lease expired or was revoked)
 - `kv secret updated successfully` with fields such as `kv_secret_path` and `kv_password_key`
 
 Error examples:
@@ -512,6 +515,12 @@ Writes are validated: `url`, `master_admin_username`, and
 `master_admin_password` must be present on the merged configuration, so an
 incomplete config can never be stored. Partial updates that only touch
 optional fields keep the stored required fields.
+
+Changing `url` or the effective target realm while roles exist returns a
+**warning**: role usernames are bare strings that resolve against the
+configured target, so the change silently re-points every role (legitimate
+for a realm rename, dangerous if the same username exists in both realms),
+and previously stored static credentials were issued against the old target.
 
 | Method | Vault CLI |
 | --- | --- |
@@ -594,17 +603,22 @@ the target user's existing password.**
 
 - *Ephemeral to static*: the role is rotated immediately (see above); stale
   `ttl`/`max_ttl` values are cleared.
-- *Static to ephemeral*: the managed password is rotated to a **discarded**
-  value (never stored or returned) and the stored credential is deleted; the
-  stale `rotation_period` is cleared. The conversion fails, leaving the role
-  static and managed, if Keycloak is unreachable.
+- *Static to ephemeral*: the stored credential entry is deleted and the stale
+  `rotation_period` is cleared. The live Keycloak password is **left
+  working**: Vault stops managing it, consumers survive the conversion. To
+  revoke it instead, call `users/<username>/rotate` before converting.
 
-**On delete:** deleting a static role also rotates the user's password to a
-discarded value: nobody manages that credential afterwards, so leaving it
-valid would dangle an unrotated secret forever. The delete fails if Keycloak
-is unreachable (retry once it is back). Deleting an ephemeral role does not
-rotate; outstanding leases keep their own revocation lifecycle. The discard is
-skipped when another (pre-v0.3.0) role still maps the same username.
+**On delete:** deleting a role removes Vault's state only (the role and any
+stored credential). The last password set in Keycloak **stays valid**, by
+design: consumers keep working, and decommissioning Vault never strands the
+services that depend on the credentials (continuity-first). Be aware this
+leaves a live, unmanaged password behind; when you want revocation semantics,
+rotate first and then delete:
+
+```bash
+vault write -force keycloak/users/<username>/rotate  # discard the output
+vault delete keycloak/roles/<name>
+```
 
 **Backward compatibility:** every role written by v0.1.x / v0.2.x (no
 `ephemeral` or `rotation_period` field, regardless of its `ttl` values) is
@@ -783,7 +797,9 @@ Keycloak disagreeing.
 
 Calling `users/<username>/rotate` on a username that belongs to one or more
 static roles resets those roles' autorotation timers to now, so the next
-scheduled rotation is deferred by a full `rotation_period`.
+scheduled rotation is deferred by a full `rotation_period`. This holds even
+when a scheduled rotation is already in flight: it re-checks the timestamp
+under the rotation lock and skips if a manual rotation just completed.
 
 ### Ephemeral roles
 
@@ -823,8 +839,11 @@ Facts worth knowing before granting policies on this mount:
   rewriting a static role immediately replaces the target user's password in
   Keycloak. Grant `create`/`update` on `roles/*` only to operators who may
   reset the mapped accounts' passwords.
-- **Deleting a static role invalidates its password** (discard rotation), so
-  `delete` on `roles/*` is also a credential-invalidation capability.
+- **Deleting a role does not invalidate its password** (continuity-first
+  design). The last password keeps working in Keycloak so consumers survive
+  role deletion and Vault decommissioning. The flip side: it is a live
+  credential no longer tracked anywhere in Vault. Rotate before deleting when
+  you need revocation semantics.
 - **The configured admin credential is high-value.** The plugin authenticates
   with a named admin via the ROPC grant. Use a dedicated service account with
   the narrowest role that can manage users in the target realm, not a full
