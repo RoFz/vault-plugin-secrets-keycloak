@@ -150,6 +150,17 @@ A scheduled rotation that was already in flight when a manual rotation
 completed now re-checks last_rotation under the rotation lock and skips, so
 the schedule always restarts from the manual rotation timestamp.
 
+### 7c. [x] Non-blocking sweep and failure backoff (added 2026-06-11)
+
+Flaky-Keycloak hardening (user-requested after the lock-contention review):
+the periodic sweep never blocks on the rotation lock (TryLock; busy means a
+rotation is already in flight, so skip and retry on a later tick), and failed
+periodic attempts back off exponentially per role (1m doubling, capped 16m,
+in-memory, reset on any successful rotation, on a fresh credential, and on
+role delete). Failures never consume the rotation schedule: the role stays
+overdue and the next allowed attempt rotates, so recovery is exactly one
+catch-up rotation per role, never a burst.
+
 ### 8. [ ] Replication-state guard and early exits in periodicFunc
 
 - File: `path_static_credentials.go` (`periodicFunc`)

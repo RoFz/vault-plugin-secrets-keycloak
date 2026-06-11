@@ -790,6 +790,16 @@ on the next tick (catch-up logic). If the plugin crashes between setting the
 password in Keycloak and storing it, the overdue check still holds on the
 next tick and the rotation simply runs again.
 
+If a rotation attempt fails (Keycloak unreachable or erroring), the served
+password stays the old, still-valid one and the role simply remains overdue.
+The sweep retries with exponential backoff (1, 2, 4, 8 minutes, capped at 16)
+instead of hammering a struggling Keycloak on every tick; any successful
+rotation, scheduled or manual, resets the backoff. When Keycloak recovers,
+exactly **one** catch-up rotation runs per overdue role: missed rotations are
+never queued and never replay in a burst. A scheduled rotation that finds
+another rotation already in flight skips without blocking and retries on a
+later tick.
+
 All rotation paths (scheduled, manual, and role-write) are serialized behind
 a single rotation lock, so the password stored in Vault is always the one
 last set in Keycloak; two interleaved rotations can never leave storage and
