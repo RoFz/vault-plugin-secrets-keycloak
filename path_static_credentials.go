@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/vault/sdk/framework"
+	"github.com/hashicorp/vault/sdk/helper/consts"
 	"github.com/hashicorp/vault/sdk/logical"
 )
 
@@ -184,6 +185,27 @@ func (b *keycloakBackend) rotateStaticCredLocked(ctx context.Context, s logical.
 // periodicFunc is called by Vault approximately every minute. It rotates any
 // static role whose rotation_period has elapsed since the last rotation.
 func (b *keycloakBackend) periodicFunc(ctx context.Context, req *logical.Request) error {
+	// Rotations mutate Keycloak and write to storage: only the primary
+	// cluster's active node may do that. DR/performance secondaries and
+	// performance standbys replicate the mount but have read-only storage;
+	// without this guard they would fail (and log) every minute.
+	if b.System().ReplicationState().HasState(
+		consts.ReplicationDRSecondary |
+			consts.ReplicationPerformanceSecondary |
+			consts.ReplicationPerformanceStandby) {
+		return nil
+	}
+
+	// Without a config there is no Keycloak to talk to: skip quietly instead
+	// of logging a client-creation failure per overdue role on every tick.
+	config, err := getConfig(ctx, req.Storage)
+	if err != nil {
+		return fmt.Errorf("periodic: failed to load config: %w", err)
+	}
+	if config == nil {
+		return nil
+	}
+
 	roles, err := req.Storage.List(ctx, "roles/")
 	if err != nil {
 		return fmt.Errorf("periodic: failed to list roles: %w", err)

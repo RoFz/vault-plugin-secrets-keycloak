@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/vault/sdk/helper/consts"
 	"github.com/hashicorp/vault/sdk/logical"
 )
 
@@ -52,13 +54,32 @@ func (f *fakeKeycloakClient) GetUser(_ context.Context, username string) (*keycl
 }
 
 // newTestBackendWithFakeClient returns a backend with a fake Keycloak client
-// pre-injected so tests don't need a real Keycloak instance or stored config.
+// pre-injected and a minimal config stored (periodicFunc exits early without
+// one; the fake client means it is never actually dialled).
 func newTestBackendWithFakeClient(t *testing.T) (*keycloakBackend, logical.Storage, *fakeKeycloakClient) {
 	t.Helper()
 	b, storage := newTestBackend(t)
+	seedConfig(t, storage)
 	fake := &fakeKeycloakClient{}
 	b.client = fake
 	return b, storage, fake
+}
+
+// seedConfig stores a minimal valid config directly in storage.
+func seedConfig(t *testing.T, storage logical.Storage) {
+	t.Helper()
+	entry, err := logical.StorageEntryJSON("config", &keycloakConfig{
+		URL:                 "https://keycloak.example.com",
+		Realm:               "master",
+		MasterAdminUsername: "admin",
+		MasterAdminPassword: "secret",
+	})
+	if err != nil {
+		t.Fatalf("config entry error: %v", err)
+	}
+	if err := storage.Put(context.Background(), entry); err != nil {
+		t.Fatalf("config store error: %v", err)
+	}
 }
 
 // writeStaticRole creates a non-ephemeral role via the API (triggers initial rotation).
@@ -1049,5 +1070,65 @@ func TestPeriodicFuncClearsBackoffWhenFresh(t *testing.T) {
 	b.backoffMu.Unlock()
 	if lingering {
 		t.Error("stale failure history must be cleared when the role is no longer overdue")
+	}
+}
+
+// --- periodicFunc guard tests (v0.3.0) ---
+
+func TestPeriodicFuncSkipsWithoutConfig(t *testing.T) {
+	// Plain backend (no seeded config) with a fake client injected: the
+	// config guard must skip before any rotation, even though a client is
+	// technically available.
+	b, storage := newTestBackend(t)
+	fake := &fakeKeycloakClient{}
+	b.client = fake
+	ctx := context.Background()
+
+	if err := b.setRole(ctx, storage, "noconfig", &keycloakRoleEntry{
+		KeycloakUsername: "noconfig-kc",
+		RotationPeriod:   30 * time.Minute,
+	}); err != nil {
+		t.Fatalf("setRole error: %v", err)
+	}
+
+	if err := b.periodicFunc(ctx, &logical.Request{Storage: storage}); err != nil {
+		t.Fatalf("periodicFunc error: %v", err)
+	}
+	if len(fake.resetCalls) != 0 {
+		t.Fatalf("no rotation must run without a config, got %d calls", len(fake.resetCalls))
+	}
+}
+
+func TestPeriodicFuncSkipsOnReplicationSecondary(t *testing.T) {
+	b := backend()
+	storage := &logical.InmemStorage{}
+	if err := b.Setup(context.Background(), &logical.BackendConfig{
+		Logger: hclog.NewNullLogger(),
+		System: &logical.StaticSystemView{
+			DefaultLeaseTTLVal:  1 * time.Hour,
+			MaxLeaseTTLVal:      24 * time.Hour,
+			ReplicationStateVal: consts.ReplicationPerformanceSecondary,
+		},
+		StorageView: storage,
+	}); err != nil {
+		t.Fatalf("backend setup failed: %v", err)
+	}
+	seedConfig(t, storage)
+	fake := &fakeKeycloakClient{}
+	b.client = fake
+	ctx := context.Background()
+
+	if err := b.setRole(ctx, storage, "secondary", &keycloakRoleEntry{
+		KeycloakUsername: "secondary-kc",
+		RotationPeriod:   30 * time.Minute,
+	}); err != nil {
+		t.Fatalf("setRole error: %v", err)
+	}
+
+	if err := b.periodicFunc(ctx, &logical.Request{Storage: storage}); err != nil {
+		t.Fatalf("periodicFunc error: %v", err)
+	}
+	if len(fake.resetCalls) != 0 {
+		t.Fatalf("no rotation must run on a replication secondary, got %d calls", len(fake.resetCalls))
 	}
 }
