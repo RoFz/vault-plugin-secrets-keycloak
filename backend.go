@@ -26,6 +26,12 @@ type keycloakBackend struct {
 	*framework.Backend
 	lock   sync.RWMutex
 	client keycloakClientIface
+
+	// rotationLock serializes every ResetPassword + setStaticCred pair
+	// (periodic, manual, and role-write initial rotations). Without it, two
+	// interleaved rotations can leave storage holding a password that is no
+	// longer the one set in Keycloak.
+	rotationLock sync.Mutex
 }
 
 // backend configures the Vault plugin backend with all paths and secrets.

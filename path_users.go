@@ -129,25 +129,35 @@ func (b *keycloakBackend) pathUsersRotate(ctx context.Context, req *logical.Requ
 		return nil, fmt.Errorf("error generating password: %w", err)
 	}
 
-	if err := client.ResetPassword(ctx, username, password); err != nil {
+	// Hold the rotation lock across the reset and the static-creds sync so a
+	// concurrent periodic rotation cannot interleave between them.
+	rotateAndSync := func() error {
+		b.rotationLock.Lock()
+		defer b.rotationLock.Unlock()
+
+		if err := client.ResetPassword(ctx, username, password); err != nil {
+			return err
+		}
+		b.Logger().Info("password rotated successfully",
+			"keycloak_username", username,
+		)
+
+		// Update static-creds storage for any non-ephemeral roles that map to
+		// this username, resetting their autorotation timer.
+		if syncErr := b.syncStaticCredsForUsername(ctx, req.Storage, username, password); syncErr != nil {
+			b.Logger().Error("failed to sync static creds after manual rotation",
+				"keycloak_username", username,
+				"error", syncErr,
+			)
+		}
+		return nil
+	}
+	if err := rotateAndSync(); err != nil {
 		b.Logger().Error("failed to rotate password",
 			"keycloak_username", username,
 			"error", err,
 		)
 		return nil, fmt.Errorf("error rotating password for user %q: %w", username, err)
-	}
-
-	b.Logger().Info("password rotated successfully",
-		"keycloak_username", username,
-	)
-
-	// Update static-creds storage for any non-ephemeral roles that map to this
-	// username, resetting their autorotation timer.
-	if syncErr := b.syncStaticCredsForUsername(ctx, req.Storage, username, password); syncErr != nil {
-		b.Logger().Error("failed to sync static creds after manual rotation",
-			"keycloak_username", username,
-			"error", syncErr,
-		)
 	}
 
 	resp := &logical.Response{

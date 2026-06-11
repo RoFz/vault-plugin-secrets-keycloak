@@ -41,8 +41,12 @@ func setStaticCred(ctx context.Context, s logical.Storage, roleName string, cred
 }
 
 // rotateStaticCred generates a new password, sets it in Keycloak, stores the
-// staticCredEntry, and optionally syncs to KV v2.
+// staticCredEntry, and optionally syncs to KV v2. The rotation lock makes the
+// reset+store pair atomic with respect to all other rotation paths.
 func (b *keycloakBackend) rotateStaticCred(ctx context.Context, s logical.Storage, roleName string, role *keycloakRoleEntry) error {
+	b.rotationLock.Lock()
+	defer b.rotationLock.Unlock()
+
 	client, err := b.getClient(ctx, s)
 	if err != nil {
 		return err

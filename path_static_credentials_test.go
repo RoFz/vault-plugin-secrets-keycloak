@@ -3,14 +3,18 @@ package secretsengine
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/hashicorp/vault/sdk/logical"
 )
 
-// fakeKeycloakClient is an in-memory implementation of keycloakClientIface for tests.
+// fakeKeycloakClient is an in-memory implementation of keycloakClientIface for
+// tests. The mutex makes it safe for concurrent rotation tests; sequential
+// tests may read resetCalls directly once all calls have completed.
 type fakeKeycloakClient struct {
+	mu         sync.Mutex
 	resetCalls []fakeResetCall
 	resetErr   error
 }
@@ -21,8 +25,21 @@ type fakeResetCall struct {
 }
 
 func (f *fakeKeycloakClient) ResetPassword(_ context.Context, username, password string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.resetCalls = append(f.resetCalls, fakeResetCall{username, password})
 	return f.resetErr
+}
+
+// lastResetPassword returns the password of the most recent ResetPassword call.
+func (f *fakeKeycloakClient) lastResetPassword(t *testing.T) string {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.resetCalls) == 0 {
+		t.Fatal("no ResetPassword calls recorded")
+	}
+	return f.resetCalls[len(f.resetCalls)-1].password
 }
 
 func (f *fakeKeycloakClient) ListUsers(_ context.Context) ([]keycloakUserInfo, error) {
@@ -670,5 +687,47 @@ func TestPeriodicFuncSkipsSharedUsernameRoles(t *testing.T) {
 	}
 	if len(fake.resetCalls) != 0 {
 		t.Fatalf("shared-username roles must never be autorotated, got %d calls", len(fake.resetCalls))
+	}
+}
+
+// --- Rotation serialization tests (v0.3.0) ---
+
+func TestConcurrentRotationsKeepStorageConsistent(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	writeStaticRole(t, b, storage, "race", "race-kc")
+	role, err := b.getRole(ctx, storage, "race")
+	if err != nil || role == nil {
+		t.Fatalf("getRole error: %v", err)
+	}
+
+	// Interleave manual user rotations with direct static rotations. Every
+	// reset+store pair must be atomic: when the dust settles, the stored
+	// password must be the one set by the LAST ResetPassword call.
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, _ = b.HandleRequest(ctx, &logical.Request{
+				Operation: logical.UpdateOperation,
+				Path:      "users/race-kc/rotate",
+				Storage:   storage,
+			})
+		}()
+		go func() {
+			defer wg.Done()
+			_ = b.rotateStaticCred(ctx, storage, "race", role)
+		}()
+	}
+	wg.Wait()
+
+	cred, err := getStaticCred(ctx, storage, "race")
+	if err != nil || cred == nil {
+		t.Fatalf("getStaticCred error: %v", err)
+	}
+	if got, want := cred.Password, fake.lastResetPassword(t); got != want {
+		t.Error("stored password diverged from the last password set in Keycloak")
 	}
 }
