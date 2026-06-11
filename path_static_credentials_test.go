@@ -429,3 +429,141 @@ func TestPeriodicFuncSkipsNonPositiveRotationPeriod(t *testing.T) {
 		t.Fatalf("roles with non-positive rotation_period must never rotate, got %d calls", len(fake.resetCalls))
 	}
 }
+
+// --- Role write: rotate-before-persist tests (v0.3.0) ---
+
+// updateRole performs an UpdateOperation on roles/<name> and returns the response.
+func updateRole(t *testing.T, b *keycloakBackend, storage logical.Storage, name string, data map[string]interface{}) (*logical.Response, error) {
+	t.Helper()
+	return b.HandleRequest(context.Background(), &logical.Request{
+		Operation: logical.UpdateOperation,
+		Path:      "roles/" + name,
+		Storage:   storage,
+		Data:      data,
+	})
+}
+
+func TestStaticRoleUpdateFailedRotationKeepsPriorRole(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	writeStaticRole(t, b, storage, "bob", "bob-kc")
+	credBefore, err := getStaticCred(ctx, storage, "bob")
+	if err != nil || credBefore == nil {
+		t.Fatalf("expected stored credential after creation, err=%v", err)
+	}
+
+	fake.resetErr = fmt.Errorf("keycloak unavailable")
+	if _, err := updateRole(t, b, storage, "bob", map[string]interface{}{
+		"keycloak_username": "bob2-kc",
+	}); err == nil {
+		t.Fatal("expected error when rotation for the new username fails")
+	}
+
+	role, err := b.getRole(ctx, storage, "bob")
+	if err != nil || role == nil {
+		t.Fatalf("prior role must survive a failed update, err=%v", err)
+	}
+	if role.KeycloakUsername != "bob-kc" {
+		t.Errorf("prior role must keep its username, got %q", role.KeycloakUsername)
+	}
+	credAfter, err := getStaticCred(ctx, storage, "bob")
+	if err != nil || credAfter == nil {
+		t.Fatalf("prior credential must survive a failed update, err=%v", err)
+	}
+	if credAfter.Password != credBefore.Password {
+		t.Error("stored credential must be unchanged after a failed update")
+	}
+}
+
+func TestStaticRoleUsernameChangeRotatesImmediately(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	writeStaticRole(t, b, storage, "carol", "carol-kc")
+	if resp, err := updateRole(t, b, storage, "carol", map[string]interface{}{
+		"keycloak_username": "carol2-kc",
+	}); err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("username change failed: err=%v resp=%v", err, resp)
+	}
+
+	if len(fake.resetCalls) != 2 {
+		t.Fatalf("expected a rotation for the new username, got %d calls", len(fake.resetCalls))
+	}
+	if fake.resetCalls[1].username != "carol2-kc" {
+		t.Errorf("rotation must target the new username, got %q", fake.resetCalls[1].username)
+	}
+
+	cred, err := getStaticCred(ctx, storage, "carol")
+	if err != nil || cred == nil {
+		t.Fatalf("expected stored credential, err=%v", err)
+	}
+	if cred.Password != fake.resetCalls[1].password {
+		t.Error("stored password must match the password set for the new username")
+	}
+}
+
+func TestEphemeralConversionFailedRotationKeepsEphemeralRole(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	if resp, err := updateRole(t, b, storage, "ephem", map[string]interface{}{
+		"keycloak_username": "ephem-kc",
+		"ephemeral":         true,
+		"ttl":               3600,
+		"max_ttl":           86400,
+	}); err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("ephemeral role write failed: err=%v resp=%v", err, resp)
+	}
+
+	fake.resetErr = fmt.Errorf("keycloak unavailable")
+	if _, err := updateRole(t, b, storage, "ephem", map[string]interface{}{
+		"ephemeral":       false,
+		"rotation_period": 1800,
+	}); err == nil {
+		t.Fatal("expected error when conversion-to-static rotation fails")
+	}
+
+	role, err := b.getRole(ctx, storage, "ephem")
+	if err != nil || role == nil {
+		t.Fatalf("role must survive a failed conversion, err=%v", err)
+	}
+	if !role.Ephemeral {
+		t.Error("role must remain ephemeral after a failed conversion to static")
+	}
+}
+
+func TestStaticEphemeralRoundTripRotates(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	writeStaticRole(t, b, storage, "dave", "dave-kc")
+
+	// Convert to ephemeral, then back to static. The credential stored during
+	// the first static phase predates the round trip and must not be served
+	// again: converting back must rotate.
+	if resp, err := updateRole(t, b, storage, "dave", map[string]interface{}{
+		"ephemeral": true,
+		"ttl":       3600,
+		"max_ttl":   86400,
+	}); err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("conversion to ephemeral failed: err=%v resp=%v", err, resp)
+	}
+	if resp, err := updateRole(t, b, storage, "dave", map[string]interface{}{
+		"ephemeral":       false,
+		"rotation_period": 1800,
+	}); err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("conversion back to static failed: err=%v resp=%v", err, resp)
+	}
+
+	if len(fake.resetCalls) != 2 {
+		t.Fatalf("expected rotation on conversion back to static, got %d calls", len(fake.resetCalls))
+	}
+	cred, err := getStaticCred(ctx, storage, "dave")
+	if err != nil || cred == nil {
+		t.Fatalf("expected stored credential, err=%v", err)
+	}
+	if cred.Password != fake.resetCalls[1].password {
+		t.Error("stored password must come from the post-conversion rotation")
+	}
+}

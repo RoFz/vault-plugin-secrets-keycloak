@@ -127,12 +127,14 @@ func (b *keycloakBackend) pathRoleRead(ctx context.Context, req *logical.Request
 
 func (b *keycloakBackend) pathRoleWrite(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	name := data.Get("name").(string)
-	role, err := b.getRole(ctx, req.Storage, name)
+	prior, err := b.getRole(ctx, req.Storage, name)
 	if err != nil {
 		return nil, err
 	}
-	if role == nil {
-		role = &keycloakRoleEntry{}
+
+	role := &keycloakRoleEntry{}
+	if prior != nil {
+		*role = *prior
 	}
 
 	if v, ok := data.GetOk("keycloak_username"); ok {
@@ -186,24 +188,37 @@ func (b *keycloakBackend) pathRoleWrite(ctx context.Context, req *logical.Reques
 		role.KVPasswordKey = v.(string)
 	}
 
-	if err := b.setRole(ctx, req.Storage, name, role); err != nil {
-		return nil, err
-	}
-
-	// For new or newly-static roles, perform an immediate first rotation so
-	// static-creds/<name> is readable right away.
+	// A static role needs an immediate rotation when it is new (or retrying a
+	// previously failed first rotation), repointed at a different Keycloak
+	// user (the stored credential belongs to the old user), or converted from
+	// ephemeral mode (any stored credential predates the conversion).
+	needsRotation := false
 	if !role.Ephemeral {
 		existingCred, err := getStaticCred(ctx, req.Storage, name)
 		if err != nil {
 			return nil, err
 		}
-		if existingCred == nil {
-			if rotErr := b.rotateStaticCred(ctx, req.Storage, name, role); rotErr != nil {
-				// Role is saved; undo it to avoid a non-functional static role.
-				_ = req.Storage.Delete(ctx, "roles/"+name)
-				return nil, fmt.Errorf("initial rotation failed: %w", rotErr)
-			}
+		usernameChanged := prior != nil && prior.KeycloakUsername != role.KeycloakUsername
+		convertedToStatic := prior != nil && prior.Ephemeral
+		needsRotation = existingCred == nil || usernameChanged || convertedToStatic
+	}
+
+	// Rotate BEFORE persisting: a failed rotation must leave any prior role
+	// definition untouched instead of deleting it.
+	if needsRotation {
+		if rotErr := b.rotateStaticCred(ctx, req.Storage, name, role); rotErr != nil {
+			return nil, fmt.Errorf("initial rotation failed: %w", rotErr)
 		}
+	}
+
+	if err := b.setRole(ctx, req.Storage, name, role); err != nil {
+		if needsRotation {
+			// Best effort: drop the just-written credential so storage cannot
+			// pair the prior role definition with the new user's password.
+			// periodicFunc re-rotates from the persisted role on the next tick.
+			_ = req.Storage.Delete(ctx, "static-creds/"+name)
+		}
+		return nil, err
 	}
 
 	return nil, nil
