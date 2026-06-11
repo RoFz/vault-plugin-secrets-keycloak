@@ -44,7 +44,8 @@ TEST_REALM = "test-realm"
 
 # One dedicated Keycloak user per test scenario to prevent password collisions
 # when multiple roles or rotations share the same user.
-TEST_USER_EPHEMERAL = "vault-ephemeral-user"  # used by role and credential tests
+TEST_USER_STATIC = "vault-static-user"        # used by static credential tests
+TEST_USER_EPHEMERAL = "vault-ephemeral-user"  # used by ephemeral credential tests
 TEST_USER_ROTATE = "vault-rotate-user"         # used by on-demand rotate tests
 
 TEST_USER_INITIAL_PASS = "InitialPass123!"
@@ -123,7 +124,7 @@ def keycloak_realm(keycloak_container):
         skip_exists=True,
     )
 
-    for username in (TEST_USER_EPHEMERAL, TEST_USER_ROTATE):
+    for username in (TEST_USER_STATIC, TEST_USER_EPHEMERAL, TEST_USER_ROTATE):
         admin.create_user(
             payload={
                 "username": username,

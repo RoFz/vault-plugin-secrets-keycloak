@@ -1,17 +1,20 @@
 """
-Tests for the credential workflow.
+Tests for the ephemeral credential workflow.
 
 Realistic sequence (mirrors actual Vault deployment usage):
   1. Configure the plugin (with KV-sync fields for KV tests).
-  2. Create a role for TEST_USER_EPHEMERAL.
-     No Keycloak call happens until the first creds/<role> read.
+  2. Create an ephemeral role for TEST_USER_EPHEMERAL.
+     Unlike static roles, no initial rotation happens — no Keycloak call until
+     the first creds/<role> read.
   3. Read creds/<role>: Vault generates a password, sets it on Keycloak, and
      returns it with a lease. Each read generates a fresh password.
   4. Verify the returned password authenticates in Keycloak.
   5. Verify that each read produces a different password.
   6. Verify KV-sync on a role with kv_password_key.
+  7. Cross-path error: creds/<role> on a static role must fail.
 """
 
+import hvac.exceptions
 import pytest
 
 from conftest import (
@@ -23,7 +26,7 @@ from conftest import (
     VAULT_ROOT_TOKEN,
 )
 
-CREDS_ROLE = "creds-main"
+EPHEMERAL_ROLE = "ephemeral-main"
 KV_PASSWORD_KEY = "ephemeral_user_password"
 
 
@@ -46,75 +49,76 @@ def plugin_configured(vault_client, plugin_config_params):
 
 
 @pytest.fixture(scope="module")
-def creds_role(vault_client, plugin_configured):
+def ephemeral_role(vault_client, plugin_configured):
     """
-    Create the role used by all tests in this module.
+    Create the ephemeral role used by all tests in this module.
 
-    No rotation occurs at creation time -- the first rotation happens on the
+    No rotation occurs at creation time — the first rotation happens on the
     first creds/<role> read.
     """
     vault_client.write(
-        f"{PLUGIN_MOUNT}/roles/{CREDS_ROLE}",
+        f"{PLUGIN_MOUNT}/roles/{EPHEMERAL_ROLE}",
         keycloak_username=TEST_USER_EPHEMERAL,
+        ephemeral=True,
         ttl="5m",
         max_ttl="10m",
         kv_password_key=KV_PASSWORD_KEY,
     )
-    yield CREDS_ROLE
-    vault_client.delete(f"{PLUGIN_MOUNT}/roles/{CREDS_ROLE}")
+    yield EPHEMERAL_ROLE
+    vault_client.delete(f"{PLUGIN_MOUNT}/roles/{EPHEMERAL_ROLE}")
 
 
-# ── Read creds ────────────────────────────────────────────────────────────────
+# ── Read ephemeral creds ──────────────────────────────────────────────────────
 
-def test_creds_returns_expected_fields(vault_client, creds_role):
-    data = vault_client.read(f"{PLUGIN_MOUNT}/creds/{creds_role}")["data"]
+def test_ephemeral_creds_returns_expected_fields(vault_client, ephemeral_role):
+    data = vault_client.read(f"{PLUGIN_MOUNT}/creds/{ephemeral_role}")["data"]
 
     assert data["username"] == TEST_USER_EPHEMERAL
     assert isinstance(data["password"], str)
     assert len(data["password"]) > 0
 
 
-def test_creds_password_authenticates_in_keycloak(
-    vault_client, creds_role, keycloak_auth_check
+def test_ephemeral_creds_password_authenticates_in_keycloak(
+    vault_client, ephemeral_role, keycloak_auth_check
 ):
     password = vault_client.read(
-        f"{PLUGIN_MOUNT}/creds/{creds_role}"
+        f"{PLUGIN_MOUNT}/creds/{ephemeral_role}"
     )["data"]["password"]
 
     assert keycloak_auth_check(TEST_USER_EPHEMERAL, password), (
-        f"Password from creds/{creds_role} did not authenticate "
+        f"Password from creds/{ephemeral_role} did not authenticate "
         f"user '{TEST_USER_EPHEMERAL}' in realm '{TEST_REALM}'"
     )
 
 
-def test_each_read_returns_different_password(vault_client, creds_role):
+def test_each_read_returns_different_password(vault_client, ephemeral_role):
     """
     Every creds/<role> read must produce a unique password. The previous
     password is no longer valid in Keycloak after the next read because each
     read resets the Keycloak user's password.
     """
-    p1 = vault_client.read(f"{PLUGIN_MOUNT}/creds/{creds_role}")["data"]["password"]
-    p2 = vault_client.read(f"{PLUGIN_MOUNT}/creds/{creds_role}")["data"]["password"]
+    p1 = vault_client.read(f"{PLUGIN_MOUNT}/creds/{ephemeral_role}")["data"]["password"]
+    p2 = vault_client.read(f"{PLUGIN_MOUNT}/creds/{ephemeral_role}")["data"]["password"]
     assert p1 != p2
 
 
-def test_creds_lease_has_ttl(vault_client, creds_role):
+def test_ephemeral_creds_lease_has_ttl(vault_client, ephemeral_role):
     """The response must carry a Vault lease with a positive TTL."""
-    response = vault_client.read(f"{PLUGIN_MOUNT}/creds/{creds_role}")
+    response = vault_client.read(f"{PLUGIN_MOUNT}/creds/{ephemeral_role}")
 
     lease_duration = response.get("lease_duration") or 0
     assert lease_duration > 0
     assert response.get("lease_id")
 
 
-# ── KV-sync on creds read ─────────────────────────────────────────────────────
+# ── KV-sync on ephemeral read ─────────────────────────────────────────────────
 
-def test_creds_syncs_kv_secret(vault_client, creds_role):
+def test_ephemeral_creds_syncs_kv_secret(vault_client, ephemeral_role):
     """
     Reading creds/<role> for a role with kv_password_key must patch the KV
     secret with the newly generated password.
     """
-    response = vault_client.read(f"{PLUGIN_MOUNT}/creds/{creds_role}")
+    response = vault_client.read(f"{PLUGIN_MOUNT}/creds/{ephemeral_role}")
     expected_password = response["data"]["password"]
 
     kv_data = vault_client.secrets.kv.v2.read_secret_version(
@@ -124,3 +128,24 @@ def test_creds_syncs_kv_secret(vault_client, creds_role):
     )["data"]["data"]
 
     assert kv_data.get(KV_PASSWORD_KEY) == expected_password
+
+
+# ── Cross-path errors ─────────────────────────────────────────────────────────
+
+def test_ephemeral_creds_on_static_role_returns_error(vault_client, plugin_configured):
+    # Username exclusivity forbids a static role on the user already mapped by
+    # the module's ephemeral role, so this temp role gets its own user.
+    from conftest import TEST_USER_ROTATE
+
+    static_role = "tmp-static-for-ephemeral-test"
+    vault_client.write(
+        f"{PLUGIN_MOUNT}/roles/{static_role}",
+        keycloak_username=TEST_USER_ROTATE,
+        rotation_period="30m",
+    )
+    try:
+        with pytest.raises(hvac.exceptions.InvalidRequest) as exc:
+            vault_client.read(f"{PLUGIN_MOUNT}/creds/{static_role}")
+        assert "static-creds" in str(exc.value)
+    finally:
+        vault_client.delete(f"{PLUGIN_MOUNT}/roles/{static_role}")
