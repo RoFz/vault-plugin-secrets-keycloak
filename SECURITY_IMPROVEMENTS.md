@@ -206,7 +206,7 @@ legacy-upgrade fixture, mode-switch flows, shared-username rejection, manual
 rotate resets the timer. Keep unit coverage above the `.testcoverage.yml`
 floors (`make cover`).
 
-### 11. [ ] Documentation: security model and upgrade notes
+### 11. [x] Documentation: security model and upgrade notes (branch side DONE across the fix commits; REMAINING: the stale "never stored by Vault" claim in .github/workflows/social.yml lives on MAIN, route via the docs/ci PR convention after this branch merges)
 
 - README: security-model section covering: static passwords are stored in
   Vault storage (plaintext within the barrier, `static-creds/*` is
@@ -219,13 +219,17 @@ floors (`make cover`).
   `.github/workflows/social.yml` (on main; route per the docs-PR convention).
 - Update plan.md: drop the stale robfig/cron conflict row from Step 8.
 
-### 12. [ ] Final verification gate
+### 12. [x] Final verification gate (run 2026-06-11 on the host; CI re-validates with pinned tooling on the PR)
 
-`make lint`, `make test-unit`, `make cover`, `make test-integration-matrix`,
-plus a manual pass in the kind dev environment (plan.md Step 10) exercising:
-incomplete config (no panic), legacy role upgrade, autorotation at the minimum
-period, KV sync failure recovery. Then open the PR (plan.md Step 12, title
-`feat:` for v0.3.0).
+RESULTS (2026-06-11): make pre-push GREEN (golangci-lint 0 issues, unit tests
+with race detector ok, govulncheck no vulnerabilities, go-licenses clean);
+make cover GREEN (82.2% total vs 72% floor, all file floors met);
+make test-integration-matrix GREEN (40/40 on each of the 3 Vault legs:
+1.14.10 MPL, 1.21.4, 2.0.2). Host-run parity notes: golangci-lint 2.12.2 vs
+CI pin 2.11.4 and unlocked local Python deps; both re-validated by CI on the
+PR. NOT done here: the kind dev environment manual pass (plan.md Step 10 is
+not built yet); the unit + integration coverage above stands in for it.
+Next: open the PR (plan.md Step 12, title `feat:` for v0.3.0).
 
 ---
 
