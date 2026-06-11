@@ -344,17 +344,24 @@ func (b *keycloakBackend) getRole(ctx context.Context, s logical.Storage, name s
 	if err := entry.DecodeJSON(&role); err != nil {
 		return nil, fmt.Errorf("error decoding role: %w", err)
 	}
+	normalizeRole(&role)
+	return &role, nil
+}
 
-	// Backward compat: every role written by v0.1.x/v0.2.x is lease-bound and
-	// has no rotation_period (ttl/max_ttl may be zero too: GetOk never stores
-	// schema defaults, so roles created without an explicit ttl carry TTL=0).
-	// A missing rotation_period therefore always means ephemeral, so legacy
-	// roles keep working with creds/<role> and are never autorotated.
+// normalizeRole applies the backward-compat classification to a decoded role
+// entry. Every role written by v0.1.x/v0.2.x is lease-bound and has no
+// rotation_period (ttl/max_ttl may be zero too: GetOk never stores schema
+// defaults, so roles created without an explicit ttl carry TTL=0). A missing
+// rotation_period therefore always means ephemeral, so legacy roles keep
+// working with creds/<role> and are never autorotated.
+//
+// Invariant (fuzz-checked): after normalization, RotationPeriod == 0 implies
+// Ephemeral. Together with periodicFunc's RotationPeriod <= 0 skip guard this
+// makes a rotation storm (rotate-every-tick on a zero period) unreachable.
+func normalizeRole(role *keycloakRoleEntry) {
 	if !role.Ephemeral && role.RotationPeriod == 0 {
 		role.Ephemeral = true
 	}
-
-	return &role, nil
 }
 
 func (b *keycloakBackend) setRole(ctx context.Context, s logical.Storage, name string, role *keycloakRoleEntry) error {
