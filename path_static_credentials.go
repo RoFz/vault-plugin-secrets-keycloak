@@ -2,6 +2,7 @@ package secretsengine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -49,12 +50,20 @@ func (b *keycloakBackend) rotateStaticCred(ctx context.Context, s logical.Storag
 	return b.rotateStaticCredLocked(ctx, s, roleName, role)
 }
 
+// errRotationInProgress signals that another rotation holds the lock; the
+// scheduled sweep skips instead of blocking and retries on a later tick.
+var errRotationInProgress = errors.New("another rotation is in progress")
+
 // rotateStaticCredIfDue rotates only if the credential is still overdue once
-// the rotation lock is held. A scheduled rotation that queued behind a manual
-// rotation (which resets last_rotation to now) detects the fresh timestamp
-// here and skips, so the schedule restarts from the manual rotation.
+// the rotation lock is held. It never blocks: a busy lock (another rotation
+// in flight, possibly burning HTTP timeouts against a flaky Keycloak) returns
+// errRotationInProgress so the sweep moves on. After acquiring the lock it
+// re-checks the timestamp, so a manual rotation that completed in the
+// meantime defers this scheduled one.
 func (b *keycloakBackend) rotateStaticCredIfDue(ctx context.Context, s logical.Storage, roleName string, role *keycloakRoleEntry) error {
-	b.rotationLock.Lock()
+	if !b.rotationLock.TryLock() {
+		return errRotationInProgress
+	}
 	defer b.rotationLock.Unlock()
 
 	cred, err := getStaticCred(ctx, s, roleName)
@@ -65,6 +74,58 @@ func (b *keycloakBackend) rotateStaticCredIfDue(ctx context.Context, s logical.S
 		return nil
 	}
 	return b.rotateStaticCredLocked(ctx, s, roleName, role)
+}
+
+// Periodic retry backoff: after f consecutive failures the next attempt waits
+// min(1min << (f-1), 16min), so a struggling Keycloak is not hammered with
+// full timeout-burning attempts on every tick. The role stays overdue the
+// whole time (freshness is never sacrificed to the backoff: the very next
+// allowed attempt rotates), and any successful rotation resets the state.
+const maxRotationBackoff = 16 * time.Minute
+
+// rotationBackoffRemaining returns how long the role must still wait before
+// the next periodic rotation attempt, or zero if an attempt is allowed.
+func (b *keycloakBackend) rotationBackoffRemaining(roleName string) time.Duration {
+	b.backoffMu.Lock()
+	defer b.backoffMu.Unlock()
+
+	state := b.rotationBackoff[roleName]
+	if state == nil || state.failures == 0 {
+		return 0
+	}
+	delay := time.Minute << (state.failures - 1)
+	if delay > maxRotationBackoff {
+		delay = maxRotationBackoff
+	}
+	if remaining := time.Until(state.lastAttempt.Add(delay)); remaining > 0 {
+		return remaining
+	}
+	return 0
+}
+
+// recordRotationFailure registers a failed periodic rotation attempt.
+func (b *keycloakBackend) recordRotationFailure(roleName string) {
+	b.backoffMu.Lock()
+	defer b.backoffMu.Unlock()
+
+	if b.rotationBackoff == nil {
+		b.rotationBackoff = make(map[string]*rotationBackoffState)
+	}
+	state := b.rotationBackoff[roleName]
+	if state == nil {
+		state = &rotationBackoffState{}
+		b.rotationBackoff[roleName] = state
+	}
+	state.failures++
+	state.lastAttempt = time.Now()
+}
+
+// clearRotationBackoff forgets a role's failure history (successful rotation,
+// role no longer overdue, or role deleted).
+func (b *keycloakBackend) clearRotationBackoff(roleName string) {
+	b.backoffMu.Lock()
+	defer b.backoffMu.Unlock()
+	delete(b.rotationBackoff, roleName)
 }
 
 // rotateStaticCredLocked generates a new password, sets it in Keycloak,
@@ -178,13 +239,33 @@ func (b *keycloakBackend) periodicFunc(ctx context.Context, req *logical.Request
 
 		needsRotation := cred == nil || time.Since(cred.LastRotation) >= role.RotationPeriod
 		if !needsRotation {
+			// A rotation succeeded since the last failure (scheduled or
+			// manual): forget the failure history.
+			b.clearRotationBackoff(roleName)
 			continue
 		}
 
-		// IfDue: re-checks the timestamp under the rotation lock, so a manual
-		// rotation that completed in the meantime defers this scheduled one.
-		if err := b.rotateStaticCredIfDue(ctx, req.Storage, roleName, role); err != nil {
+		if wait := b.rotationBackoffRemaining(roleName); wait > 0 {
+			b.Logger().Debug("periodic: backing off after failed rotations",
+				"role", roleName,
+				"retry_in", wait.Round(time.Second).String(),
+			)
+			continue
+		}
+
+		// IfDue: skips without blocking when another rotation holds the lock,
+		// and re-checks the timestamp under the lock so a manual rotation
+		// that completed in the meantime defers this scheduled one.
+		switch err := b.rotateStaticCredIfDue(ctx, req.Storage, roleName, role); {
+		case errors.Is(err, errRotationInProgress):
+			b.Logger().Debug("periodic: another rotation in progress; skipping",
+				"role", roleName,
+			)
+		case err != nil:
+			b.recordRotationFailure(roleName)
 			b.Logger().Error("periodic: rotation failed", "role", roleName, "error", err)
+		default:
+			b.clearRotationBackoff(roleName)
 		}
 	}
 

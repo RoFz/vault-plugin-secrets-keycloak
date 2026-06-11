@@ -319,6 +319,7 @@ func (b *keycloakBackend) pathRoleDelete(ctx context.Context, req *logical.Reque
 	if err := req.Storage.Delete(ctx, "static-creds/"+name); err != nil {
 		return nil, err
 	}
+	b.clearRotationBackoff(name)
 	return nil, nil
 }
 

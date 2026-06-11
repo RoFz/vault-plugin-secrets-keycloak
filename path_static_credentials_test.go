@@ -2,6 +2,7 @@ package secretsengine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -914,5 +915,139 @@ func TestRotateIfDueSkipsFreshCredential(t *testing.T) {
 	}
 	if len(fake.resetCalls) != 1 {
 		t.Fatalf("overdue credential must rotate, got %d calls", len(fake.resetCalls))
+	}
+}
+
+// --- Non-blocking sweep and failure backoff tests (v0.3.0) ---
+
+func TestRotateIfDueSkipsWhenLockBusy(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	role := &keycloakRoleEntry{
+		KeycloakUsername: "busy-kc",
+		RotationPeriod:   30 * time.Minute,
+	}
+	if err := b.setRole(ctx, storage, "busy", role); err != nil {
+		t.Fatalf("setRole error: %v", err)
+	}
+
+	// Simulate another rotation in flight.
+	b.rotationLock.Lock()
+	err := b.rotateStaticCredIfDue(ctx, storage, "busy", role)
+	b.rotationLock.Unlock()
+
+	if !errors.Is(err, errRotationInProgress) {
+		t.Fatalf("expected errRotationInProgress, got %v", err)
+	}
+	if len(fake.resetCalls) != 0 {
+		t.Fatalf("no rotation must run while the lock is busy, got %d calls", len(fake.resetCalls))
+	}
+}
+
+func TestPeriodicFuncBacksOffAfterFailures(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	if err := b.setRole(ctx, storage, "flaky", &keycloakRoleEntry{
+		KeycloakUsername: "flaky-kc",
+		RotationPeriod:   30 * time.Minute,
+	}); err != nil {
+		t.Fatalf("setRole error: %v", err)
+	}
+	if err := setStaticCred(ctx, storage, "flaky", &staticCredEntry{
+		Password:     "old",
+		LastRotation: time.Now().Add(-2 * time.Hour), // overdue
+	}); err != nil {
+		t.Fatalf("setStaticCred error: %v", err)
+	}
+	fake.resetErr = fmt.Errorf("keycloak unavailable")
+
+	// First sweep: one attempt, which fails and arms the backoff.
+	if err := b.periodicFunc(ctx, &logical.Request{Storage: storage}); err != nil {
+		t.Fatalf("periodicFunc error: %v", err)
+	}
+	if len(fake.resetCalls) != 1 {
+		t.Fatalf("expected 1 attempt on the first sweep, got %d", len(fake.resetCalls))
+	}
+
+	// Immediate next sweeps: inside the 1-minute backoff window, no attempts.
+	for i := 0; i < 3; i++ {
+		if err := b.periodicFunc(ctx, &logical.Request{Storage: storage}); err != nil {
+			t.Fatalf("periodicFunc error: %v", err)
+		}
+	}
+	if len(fake.resetCalls) != 1 {
+		t.Fatalf("sweeps within the backoff window must not attempt, got %d calls", len(fake.resetCalls))
+	}
+
+	// Backoff growth: 3 consecutive failures wait 4 minutes, capped at 16.
+	b.backoffMu.Lock()
+	b.rotationBackoff["flaky"].failures = 3
+	b.backoffMu.Unlock()
+	if got := b.rotationBackoffRemaining("flaky"); got <= 3*time.Minute || got > 4*time.Minute {
+		t.Errorf("expected ~4m remaining after 3 failures, got %v", got)
+	}
+	b.backoffMu.Lock()
+	b.rotationBackoff["flaky"].failures = 10
+	b.backoffMu.Unlock()
+	if got := b.rotationBackoffRemaining("flaky"); got > maxRotationBackoff {
+		t.Errorf("backoff must be capped at %v, got %v", maxRotationBackoff, got)
+	}
+
+	// Keycloak recovers and the backoff window elapses: next sweep rotates
+	// once and clears the failure history.
+	fake.resetErr = nil
+	b.backoffMu.Lock()
+	b.rotationBackoff["flaky"].lastAttempt = time.Now().Add(-time.Hour)
+	b.backoffMu.Unlock()
+	if err := b.periodicFunc(ctx, &logical.Request{Storage: storage}); err != nil {
+		t.Fatalf("periodicFunc error: %v", err)
+	}
+	if len(fake.resetCalls) != 2 {
+		t.Fatalf("expected exactly one catch-up rotation after recovery, got %d calls", len(fake.resetCalls))
+	}
+	if b.rotationBackoffRemaining("flaky") != 0 {
+		t.Error("backoff must be cleared after a successful rotation")
+	}
+	b.backoffMu.Lock()
+	_, lingering := b.rotationBackoff["flaky"]
+	b.backoffMu.Unlock()
+	if lingering {
+		t.Error("backoff state must be removed after success")
+	}
+}
+
+func TestPeriodicFuncClearsBackoffWhenFresh(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	if err := b.setRole(ctx, storage, "healed", &keycloakRoleEntry{
+		KeycloakUsername: "healed-kc",
+		RotationPeriod:   30 * time.Minute,
+	}); err != nil {
+		t.Fatalf("setRole error: %v", err)
+	}
+	// Failure history from a past outage, but the credential is fresh now
+	// (e.g. a manual rotation succeeded meanwhile).
+	b.recordRotationFailure("healed")
+	if err := setStaticCred(ctx, storage, "healed", &staticCredEntry{
+		Password:     "fresh",
+		LastRotation: time.Now().Add(-1 * time.Minute),
+	}); err != nil {
+		t.Fatalf("setStaticCred error: %v", err)
+	}
+
+	if err := b.periodicFunc(ctx, &logical.Request{Storage: storage}); err != nil {
+		t.Fatalf("periodicFunc error: %v", err)
+	}
+	if len(fake.resetCalls) != 0 {
+		t.Fatalf("fresh credential must not rotate, got %d calls", len(fake.resetCalls))
+	}
+	b.backoffMu.Lock()
+	_, lingering := b.rotationBackoff["healed"]
+	b.backoffMu.Unlock()
+	if lingering {
+		t.Error("stale failure history must be cleared when the role is no longer overdue")
 	}
 }

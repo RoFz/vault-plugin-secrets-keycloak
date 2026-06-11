@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
@@ -32,6 +33,19 @@ type keycloakBackend struct {
 	// interleaved rotations can leave storage holding a password that is no
 	// longer the one set in Keycloak.
 	rotationLock sync.Mutex
+
+	// backoffMu guards rotationBackoff: per-role consecutive periodic
+	// rotation failures, used to back off retries against a struggling
+	// Keycloak. In-memory only: a plugin restart simply retries immediately.
+	backoffMu       sync.Mutex
+	rotationBackoff map[string]*rotationBackoffState
+}
+
+// rotationBackoffState tracks consecutive periodic rotation failures for one
+// role and when the last attempt was made.
+type rotationBackoffState struct {
+	failures    int
+	lastAttempt time.Time
 }
 
 // backend configures the Vault plugin backend with all paths and secrets.
