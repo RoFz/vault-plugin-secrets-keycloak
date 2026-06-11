@@ -189,9 +189,18 @@ catch-up rotation per role, never a burst.
 
 ## P3: Tests, docs, release hygiene
 
-### 10. [ ] Integration coverage for autorotation
+### 10. [x] Integration coverage for autorotation (done 2026-06-11, commits 4d3fcc7 + 2ac1432)
 
-Cherry-pick the integration suite (plan.md Step 9), then extend it:
+DONE. Note: plan.md Step 9's cherry-pick instructions were stale (that branch
+predates the rebase and would have regressed main's newer test infra:
+versions.env, requirements.lock, env-parametrized conftest). The test CONTENT
+was ported instead and adapted to the post-review semantics (username
+exclusivity, continuity-first conversion, kv_synced/next_rotation fields).
+40/40 integration tests pass locally (Vault 1.21.4 leg). Also added two fuzz
+targets per the P3 fuzz assessment: FuzzNormalizeRoleInvariant (rotation-storm
+guard over the whole input space; 264k execs clean) and
+FuzzStaticCredEntryDecode. Original scope:
+cherry-pick the integration suite (plan.md Step 9), then extend it:
 end-to-end static role lifecycle (create -> read -> autorotate -> read),
 legacy-upgrade fixture, mode-switch flows, shared-username rejection, manual
 rotate resets the timer. Keep unit coverage above the `.testcoverage.yml`
