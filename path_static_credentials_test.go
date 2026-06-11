@@ -567,3 +567,108 @@ func TestStaticEphemeralRoundTripRotates(t *testing.T) {
 		t.Error("stored password must come from the post-conversion rotation")
 	}
 }
+
+// --- Username exclusivity tests (v0.3.0) ---
+
+func TestRoleWriteRejectsSharedUsername(t *testing.T) {
+	b, storage, _ := newTestBackendWithFakeClient(t)
+
+	writeStaticRole(t, b, storage, "s1", "shared-kc")
+	if resp, err := updateRole(t, b, storage, "e0", map[string]interface{}{
+		"keycloak_username": "shared-ephem-kc",
+		"ephemeral":         true,
+		"ttl":               3600,
+		"max_ttl":           86400,
+	}); err != nil || (resp != nil && resp.IsError()) {
+		t.Fatalf("ephemeral role write failed: err=%v resp=%v", err, resp)
+	}
+
+	cases := []struct {
+		name      string
+		data      map[string]interface{}
+		wantError bool
+	}{
+		{"static vs static", map[string]interface{}{
+			"keycloak_username": "shared-kc",
+			"rotation_period":   1800,
+		}, true},
+		{"ephemeral vs static", map[string]interface{}{
+			"keycloak_username": "shared-kc",
+			"ephemeral":         true,
+			"ttl":               3600,
+			"max_ttl":           86400,
+		}, true},
+		{"static vs ephemeral", map[string]interface{}{
+			"keycloak_username": "shared-ephem-kc",
+			"rotation_period":   1800,
+		}, true},
+		{"ephemeral vs ephemeral", map[string]interface{}{
+			"keycloak_username": "shared-ephem-kc",
+			"ephemeral":         true,
+			"ttl":               3600,
+			"max_ttl":           86400,
+		}, false},
+	}
+	for i, tc := range cases {
+		resp, err := updateRole(t, b, storage, fmt.Sprintf("candidate-%d", i), tc.data)
+		if err != nil {
+			t.Fatalf("%s: unexpected transport error: %v", tc.name, err)
+		}
+		gotError := resp != nil && resp.IsError()
+		if gotError != tc.wantError {
+			t.Errorf("%s: wantError=%v, got resp=%v", tc.name, tc.wantError, resp)
+		}
+	}
+
+	// Rewriting a role with its own (unchanged) username must not conflict
+	// with itself.
+	if resp, err := updateRole(t, b, storage, "s1", map[string]interface{}{
+		"rotation_period": 3600,
+	}); err != nil || (resp != nil && resp.IsError()) {
+		t.Errorf("self-rewrite must be allowed: err=%v resp=%v", err, resp)
+	}
+}
+
+func TestPeriodicFuncSkipsSharedUsernameRoles(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	// Pre-existing storage that predates write-time exclusivity: two static
+	// roles on one username, and a static role sharing with an ephemeral one.
+	overdue := &staticCredEntry{Password: "old", LastRotation: time.Now().Add(-2 * time.Hour)}
+	for _, name := range []string{"dup-a", "dup-b"} {
+		if err := b.setRole(ctx, storage, name, &keycloakRoleEntry{
+			KeycloakUsername: "dup-kc",
+			RotationPeriod:   30 * time.Minute,
+		}); err != nil {
+			t.Fatalf("setRole error: %v", err)
+		}
+		if err := setStaticCred(ctx, storage, name, overdue); err != nil {
+			t.Fatalf("setStaticCred error: %v", err)
+		}
+	}
+	if err := b.setRole(ctx, storage, "mixed-static", &keycloakRoleEntry{
+		KeycloakUsername: "mixed-kc",
+		RotationPeriod:   30 * time.Minute,
+	}); err != nil {
+		t.Fatalf("setRole error: %v", err)
+	}
+	if err := setStaticCred(ctx, storage, "mixed-static", overdue); err != nil {
+		t.Fatalf("setStaticCred error: %v", err)
+	}
+	if err := b.setRole(ctx, storage, "mixed-ephem", &keycloakRoleEntry{
+		KeycloakUsername: "mixed-kc",
+		Ephemeral:        true,
+		TTL:              time.Hour,
+		MaxTTL:           24 * time.Hour,
+	}); err != nil {
+		t.Fatalf("setRole error: %v", err)
+	}
+
+	if err := b.periodicFunc(ctx, &logical.Request{Storage: storage}); err != nil {
+		t.Fatalf("periodicFunc error: %v", err)
+	}
+	if len(fake.resetCalls) != 0 {
+		t.Fatalf("shared-username roles must never be autorotated, got %d calls", len(fake.resetCalls))
+	}
+}

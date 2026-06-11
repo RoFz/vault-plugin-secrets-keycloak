@@ -100,12 +100,27 @@ func (b *keycloakBackend) periodicFunc(ctx context.Context, req *logical.Request
 		return fmt.Errorf("periodic: failed to list roles: %w", err)
 	}
 
+	// First pass: load every role and count how many map each username. Role
+	// writes enforce exclusivity, but storage may predate that validation
+	// (upgrades), and rotating a shared username would invalidate the other
+	// role's stored password.
+	loaded := make(map[string]*keycloakRoleEntry, len(roles))
+	usernameCount := make(map[string]int, len(roles))
 	for _, roleName := range roles {
 		role, err := b.getRole(ctx, req.Storage, roleName)
 		if err != nil {
 			b.Logger().Error("periodic: failed to load role", "role", roleName, "error", err)
 			continue
 		}
+		if role == nil {
+			continue
+		}
+		loaded[roleName] = role
+		usernameCount[role.KeycloakUsername]++
+	}
+
+	for _, roleName := range roles {
+		role := loaded[roleName]
 		if role == nil || role.Ephemeral {
 			continue
 		}
@@ -116,6 +131,13 @@ func (b *keycloakBackend) periodicFunc(ctx context.Context, req *logical.Request
 		if role.RotationPeriod <= 0 {
 			b.Logger().Error("periodic: static role has no rotation_period; skipping",
 				"role", roleName,
+			)
+			continue
+		}
+		if usernameCount[role.KeycloakUsername] > 1 {
+			b.Logger().Error("periodic: keycloak_username is mapped by multiple roles; skipping rotation",
+				"role", roleName,
+				"keycloak_username", role.KeycloakUsername,
 			)
 			continue
 		}

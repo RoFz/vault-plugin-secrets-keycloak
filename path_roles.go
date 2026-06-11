@@ -188,6 +188,13 @@ func (b *keycloakBackend) pathRoleWrite(ctx context.Context, req *logical.Reques
 		role.KVPasswordKey = v.(string)
 	}
 
+	// A Keycloak user may be shared by multiple ephemeral roles (pre-v0.3.0
+	// behaviour), but never by a static role and anything else: concurrent
+	// rotation paths would silently invalidate each other's passwords.
+	if resp, err := b.checkUsernameExclusive(ctx, req.Storage, name, role); err != nil || resp != nil {
+		return resp, err
+	}
+
 	// A static role needs an immediate rotation when it is new (or retrying a
 	// previously failed first rotation), repointed at a different Keycloak
 	// user (the stored credential belongs to the old user), or converted from
@@ -221,6 +228,36 @@ func (b *keycloakBackend) pathRoleWrite(ctx context.Context, req *logical.Reques
 		return nil, err
 	}
 
+	return nil, nil
+}
+
+// checkUsernameExclusive returns an error response when the candidate role's
+// keycloak_username is already mapped by another role in a conflicting mode.
+// Sharing is allowed only between ephemeral roles.
+func (b *keycloakBackend) checkUsernameExclusive(ctx context.Context, s logical.Storage, name string, role *keycloakRoleEntry) (*logical.Response, error) {
+	roleNames, err := s.List(ctx, "roles/")
+	if err != nil {
+		return nil, fmt.Errorf("error listing roles: %w", err)
+	}
+	for _, other := range roleNames {
+		if other == name {
+			continue
+		}
+		otherRole, err := b.getRole(ctx, s, other)
+		if err != nil {
+			return nil, err
+		}
+		if otherRole == nil || otherRole.KeycloakUsername != role.KeycloakUsername {
+			continue
+		}
+		if role.Ephemeral && otherRole.Ephemeral {
+			continue
+		}
+		return logical.ErrorResponse(
+			"keycloak_username %q is already mapped by role %q; a username may be shared only between ephemeral roles",
+			role.KeycloakUsername, other,
+		), nil
+	}
 	return nil, nil
 }
 
