@@ -872,3 +872,47 @@ func TestConversionToStaticZeroesLeaseFields(t *testing.T) {
 		t.Errorf("ttl/max_ttl must be zeroed after conversion to static, got ttl=%v max_ttl=%v", role.TTL, role.MaxTTL)
 	}
 }
+
+// --- Scheduled-vs-manual rotation deferral tests (v0.3.0) ---
+
+func TestRotateIfDueSkipsFreshCredential(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	role := &keycloakRoleEntry{
+		KeycloakUsername: "due-kc",
+		RotationPeriod:   30 * time.Minute,
+	}
+	if err := b.setRole(ctx, storage, "due", role); err != nil {
+		t.Fatalf("setRole error: %v", err)
+	}
+
+	// A manual rotation just happened (timestamp is fresh): the scheduled
+	// rotation must detect it under the lock and skip.
+	if err := setStaticCred(ctx, storage, "due", &staticCredEntry{
+		Password:     "fresh",
+		LastRotation: time.Now().Add(-1 * time.Minute),
+	}); err != nil {
+		t.Fatalf("setStaticCred error: %v", err)
+	}
+	if err := b.rotateStaticCredIfDue(ctx, storage, "due", role); err != nil {
+		t.Fatalf("rotateStaticCredIfDue error: %v", err)
+	}
+	if len(fake.resetCalls) != 0 {
+		t.Fatalf("scheduled rotation must skip a freshly rotated credential, got %d calls", len(fake.resetCalls))
+	}
+
+	// Overdue credential: the same path must rotate.
+	if err := setStaticCred(ctx, storage, "due", &staticCredEntry{
+		Password:     "stale",
+		LastRotation: time.Now().Add(-2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("setStaticCred error: %v", err)
+	}
+	if err := b.rotateStaticCredIfDue(ctx, storage, "due", role); err != nil {
+		t.Fatalf("rotateStaticCredIfDue error: %v", err)
+	}
+	if len(fake.resetCalls) != 1 {
+		t.Fatalf("overdue credential must rotate, got %d calls", len(fake.resetCalls))
+	}
+}

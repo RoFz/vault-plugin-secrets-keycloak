@@ -40,13 +40,37 @@ func setStaticCred(ctx context.Context, s logical.Storage, roleName string, cred
 	return s.Put(ctx, entry)
 }
 
-// rotateStaticCred generates a new password, sets it in Keycloak, stores the
-// staticCredEntry, and optionally syncs to KV v2. The rotation lock makes the
+// rotateStaticCred unconditionally rotates (role writes need this: the
+// rotation is the point of the write). The rotation lock makes the
 // reset+store pair atomic with respect to all other rotation paths.
 func (b *keycloakBackend) rotateStaticCred(ctx context.Context, s logical.Storage, roleName string, role *keycloakRoleEntry) error {
 	b.rotationLock.Lock()
 	defer b.rotationLock.Unlock()
+	return b.rotateStaticCredLocked(ctx, s, roleName, role)
+}
 
+// rotateStaticCredIfDue rotates only if the credential is still overdue once
+// the rotation lock is held. A scheduled rotation that queued behind a manual
+// rotation (which resets last_rotation to now) detects the fresh timestamp
+// here and skips, so the schedule restarts from the manual rotation.
+func (b *keycloakBackend) rotateStaticCredIfDue(ctx context.Context, s logical.Storage, roleName string, role *keycloakRoleEntry) error {
+	b.rotationLock.Lock()
+	defer b.rotationLock.Unlock()
+
+	cred, err := getStaticCred(ctx, s, roleName)
+	if err != nil {
+		return err
+	}
+	if cred != nil && time.Since(cred.LastRotation) < role.RotationPeriod {
+		return nil
+	}
+	return b.rotateStaticCredLocked(ctx, s, roleName, role)
+}
+
+// rotateStaticCredLocked generates a new password, sets it in Keycloak,
+// stores the staticCredEntry, and optionally syncs to KV v2. Callers must
+// hold rotationLock.
+func (b *keycloakBackend) rotateStaticCredLocked(ctx context.Context, s logical.Storage, roleName string, role *keycloakRoleEntry) error {
 	client, err := b.getClient(ctx, s)
 	if err != nil {
 		return err
@@ -157,7 +181,9 @@ func (b *keycloakBackend) periodicFunc(ctx context.Context, req *logical.Request
 			continue
 		}
 
-		if err := b.rotateStaticCred(ctx, req.Storage, roleName, role); err != nil {
+		// IfDue: re-checks the timestamp under the rotation lock, so a manual
+		// rotation that completed in the meantime defers this scheduled one.
+		if err := b.rotateStaticCredIfDue(ctx, req.Storage, roleName, role); err != nil {
 			b.Logger().Error("periodic: rotation failed", "role", roleName, "error", err)
 		}
 	}
