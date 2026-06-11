@@ -152,6 +152,13 @@ func (b *keycloakBackend) rotateStaticCredLocked(ctx context.Context, s logical.
 		return fmt.Errorf("error rotating password for user %q: %w", role.KeycloakUsername, err)
 	}
 
+	// Crash window: if the process dies after Keycloak accepted the new
+	// password but before the store below, storage holds a dead password.
+	// Scheduled rotations self-heal on the next tick (the role is still
+	// overdue). A crash inside a manual rotation can leave the dead password
+	// until the schedule next elapses; a pending-rotation marker is tracked
+	// in issue #50. No WAL at a 1-minute periodic cadence.
+
 	config, cfgErr := getConfig(ctx, s)
 	if cfgErr != nil {
 		config = nil
