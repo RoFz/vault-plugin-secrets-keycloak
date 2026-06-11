@@ -684,3 +684,62 @@ func TestGetClientIncompleteConfigNoTypedNil(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigIdentityChangeWarnsWithRoles(t *testing.T) {
+	b, storage := newTestBackend(t)
+	ctx := context.Background()
+
+	writeConfig := func(target string) *logical.Response {
+		t.Helper()
+		resp, err := b.HandleRequest(ctx, &logical.Request{
+			Operation: logical.UpdateOperation,
+			Path:      "config",
+			Storage:   storage,
+			Data: map[string]interface{}{
+				"url":                   "https://keycloak.example.com",
+				"master_admin_username": "admin",
+				"master_admin_password": "secret",
+				"target_realm":          target,
+			},
+		})
+		if err != nil {
+			t.Fatalf("config write error: %v", err)
+		}
+		if resp != nil && resp.IsError() {
+			t.Fatalf("config write returned error: %s", resp.Error())
+		}
+		return resp
+	}
+
+	writeConfig("realm-a")
+
+	// No roles yet: changing the identity warns nobody.
+	if resp := writeConfig("realm-b"); resp != nil && len(resp.Warnings) > 0 {
+		t.Errorf("no warning expected without roles, got: %v", resp.Warnings)
+	}
+
+	// Create a role, then change the target realm: must warn.
+	if _, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "roles/app",
+		Storage:   storage,
+		Data: map[string]interface{}{
+			"keycloak_username": "svc",
+			"ephemeral":         true,
+			"ttl":               3600,
+			"max_ttl":           86400,
+		},
+	}); err != nil {
+		t.Fatalf("role write error: %v", err)
+	}
+
+	resp := writeConfig("realm-c")
+	if resp == nil || len(resp.Warnings) == 0 {
+		t.Fatal("expected a warning when target_realm changes while roles exist")
+	}
+
+	// Unchanged identity: no warning even with roles.
+	if resp := writeConfig("realm-c"); resp != nil && len(resp.Warnings) > 0 {
+		t.Errorf("no warning expected for an unchanged identity, got: %v", resp.Warnings)
+	}
+}

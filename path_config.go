@@ -156,8 +156,18 @@ func (b *keycloakBackend) pathConfigWrite(ctx context.Context, req *logical.Requ
 	if err != nil {
 		return nil, err
 	}
-	if config == nil {
+	isNew := config == nil
+	if isNew {
 		config = &keycloakConfig{}
+	}
+
+	// Capture the prior identity (which Keycloak, which realm) before the
+	// merge: roles store bare usernames that resolve against it, so changing
+	// it silently re-points every existing role.
+	priorURL := config.URL
+	priorTarget := config.TargetRealm
+	if priorTarget == "" {
+		priorTarget = config.Realm
 	}
 
 	if v, ok := data.GetOk("url"); ok {
@@ -219,12 +229,31 @@ func (b *keycloakBackend) pathConfigWrite(ctx context.Context, req *logical.Requ
 
 	b.reset()
 
+	// Changing the Keycloak identity (url or effective target realm) while
+	// roles exist re-points every stored username at the new target; if the
+	// same username exists there, rotations will start resetting that other
+	// account's password. The write is allowed (realm renames are legitimate)
+	// but never silent.
+	var resp *logical.Response
+	effectiveTarget := config.TargetRealm
+	if effectiveTarget == "" {
+		effectiveTarget = config.Realm
+	}
+	if !isNew && (config.URL != priorURL || effectiveTarget != priorTarget) {
+		roles, err := req.Storage.List(ctx, "roles/")
+		if err == nil && len(roles) > 0 {
+			resp = &logical.Response{Warnings: []string{fmt.Sprintf(
+				"keycloak identity changed (url %q -> %q, target realm %q -> %q) while %d role(s) exist: "+
+					"their usernames now resolve against the new target, and stored static credentials "+
+					"were issued against the old one (they will be overwritten on the next rotation)",
+				priorURL, config.URL, priorTarget, effectiveTarget, len(roles),
+			)}}
+		}
+	}
+
 	// Test connectivity immediately so the operator gets feedback at config time.
 	// The write succeeds regardless — Keycloak may not be reachable yet.
-	targetRealm := config.TargetRealm
-	if targetRealm == "" {
-		targetRealm = config.Realm
-	}
+	targetRealm := effectiveTarget
 	client, err := newClient(config)
 	if err != nil {
 		b.Logger().Error("keycloak config saved but client could not be created",
@@ -251,7 +280,7 @@ func (b *keycloakBackend) pathConfigWrite(ctx context.Context, req *logical.Requ
 		)
 	}
 
-	return nil, nil
+	return resp, nil
 }
 
 func (b *keycloakBackend) pathConfigDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
