@@ -19,7 +19,7 @@ conflicts in favour of main (plan.md Step 7), merge both sides of
 go.mod conflict; the branch never touched go.mod (PeriodicFunc replaced cron),
 so no go.mod/go.sum conflict will occur.
 
-### 2. [x] Fix the legacy-role autorotation storm (done 2026-06-11, commit 9b45c7f)
+### 2. [x] Fix the legacy-role autorotation storm (done 2026-06-11, commit c959ac9)
 
 - Files: `path_roles.go` (compat shim, lines 245-251), `path_static_credentials.go` (`periodicFunc`, line 119)
 - Problem: roles created on v0.1.x/v0.2.x without an explicit `ttl`
@@ -36,7 +36,7 @@ so no go.mod/go.sum conflict will occur.
   field; assert it is ephemeral, never rotated by `periodicFunc`, and still
   usable via `creds/<role>`.
 
-### 3. [x] Fix the typed-nil client panic (done 2026-06-11, commit d7709c1)
+### 3. [x] Fix the typed-nil client panic (done 2026-06-11, commit 557ffa0)
 
 - Files: `backend.go` (line 97), `path_config.go` (`pathConfigWrite`)
 - Problem: `b.client, err = newClient(config)` stores a nil `*keycloakClient`
@@ -58,7 +58,7 @@ so no go.mod/go.sum conflict will occur.
 
 ## P1: High (correctness and credential-integrity bugs)
 
-### 4. [x] Restructure role write: validate -> rotate -> persist (done 2026-06-11, commit 79d240d)
+### 4. [x] Restructure role write: validate -> rotate -> persist (done 2026-06-11, commit 42acd44)
 
 - File: `path_roles.go` (`pathRoleWrite`, lines 189-207)
 - Problems:
@@ -75,7 +75,7 @@ so no go.mod/go.sum conflict will occur.
 - Test: failed rotation on an update leaves the previous role intact;
   username change triggers immediate rotation and a matching cred pair.
 
-### 5. [x] Enforce username uniqueness across roles (done 2026-06-11, commit 86ca9e8; periodic warn-and-skip default applied)
+### 5. [x] Enforce username uniqueness across roles (done 2026-06-11, commit d9145e7; periodic warn-and-skip default applied)
 
 - File: `path_roles.go` (`pathRoleWrite`)
 - Problem: nothing prevents one Keycloak username from being mapped by multiple
@@ -94,7 +94,7 @@ so no go.mod/go.sum conflict will occur.
 - Test: rejection matrix for all four combinations; upgrade fixture with a
   pre-existing conflict.
 
-### 6. [x] Serialize rotations with a lock (done 2026-06-11, commit fbcb212)
+### 6. [x] Serialize rotations with a lock (done 2026-06-11, commit 56c3c9d)
 
 - Files: `path_static_credentials.go` (`rotateStaticCred`,
   `syncStaticCredsForUsername`), `path_users.go` (`pathUsersRotate`)
@@ -112,7 +112,7 @@ so no go.mod/go.sum conflict will occur.
 
 ## P2: Hardening
 
-### 7. [x] Mode-switch and delete hygiene (REVISED 2026-06-11, commit 0bab367)
+### 7. [x] Mode-switch and delete hygiene (REVISED 2026-06-11, commit 55cbeef)
 
 DECISION REVISED (user, 2026-06-11): continuity-first design. The original
 intent of the plugin is that Keycloak credentials remain operational if Vault
@@ -121,7 +121,7 @@ clean up Vault state ONLY (role entry, stored credential, stale fields); the
 live Keycloak password intentionally keeps working. Discard-rotation applies
 ONLY to lease revocation (defining lease semantic). Revocation on demand is
 composable: users/<username>/rotate, then delete. The earlier strict variant
-(211dee0, discard on both) was superseded by 0bab367. Documented in README
+(5114c53, discard on both) was superseded by 55cbeef. Documented in README
 (security model, roles reference, lifecycle diagram).
 
 - File: `path_roles.go`
@@ -137,14 +137,14 @@ composable: users/<username>/rotate, then delete. The earlier strict variant
   (recommended: yes to both). If declined, document the dangling-password
   behaviour prominently instead.
 
-### 7a. [x] Config identity-change warning (added 2026-06-11, commit e561efb)
+### 7a. [x] Config identity-change warning (added 2026-06-11, commit 1a74ad3)
 
 Changing url or the effective target realm while roles exist re-points every
 role's username at the new target (dangerous when the same username exists in
 both realms). Config writes now return a Vault warning listing the change and
 the role count. Documented in the README config section.
 
-### 7b. [x] Defer queued scheduled rotations after a manual rotation (added 2026-06-11, commit e84f144)
+### 7b. [x] Defer queued scheduled rotations after a manual rotation (added 2026-06-11, commit 17590f9)
 
 A scheduled rotation that was already in flight when a manual rotation
 completed now re-checks last_rotation under the rotation lock and skips, so
@@ -161,7 +161,7 @@ role delete). Failures never consume the rotation schedule: the role stays
 overdue and the next allowed attempt rotates, so recovery is exactly one
 catch-up rotation per role, never a burst.
 
-### 8. [x] Replication-state guard and early exits in periodicFunc (done 2026-06-11, commit 51cfdfd)
+### 8. [x] Replication-state guard and early exits in periodicFunc (done 2026-06-11, commit 44471df)
 
 - File: `path_static_credentials.go` (`periodicFunc`)
 - Fix:
@@ -172,7 +172,7 @@ catch-up rotation per role, never a burst.
   - Return early when no config is stored, instead of logging a `getClient`
     failure per overdue role per minute.
 
-### 9. [x] KV sync retry and staleness signalling (done 2026-06-11, commit 6229217)
+### 9. [x] KV sync retry and staleness signalling (done 2026-06-11, commit aadda5b)
 
 - Files: `path_static_credentials.go`, `path_roles.go` (entry struct)
 - Problems: a failed KV sync after a successful Keycloak rotation leaves the
@@ -189,7 +189,7 @@ catch-up rotation per role, never a burst.
 
 ## P3: Tests, docs, release hygiene
 
-### 10. [x] Integration coverage for autorotation (done 2026-06-11, commits 4d3fcc7 + 2ac1432)
+### 10. [x] Integration coverage for autorotation (done 2026-06-11, commits 6d38180 + f7751fe)
 
 DONE. Note: plan.md Step 9's cherry-pick instructions were stale (that branch
 predates the rebase and would have regressed main's newer test infra:
