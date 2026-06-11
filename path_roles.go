@@ -324,7 +324,13 @@ func (b *keycloakBackend) discardPassword(ctx context.Context, s logical.Storage
 	if err != nil {
 		return fmt.Errorf("error generating discard password: %w", err)
 	}
-	return client.ResetPassword(ctx, username, discarded)
+	if err := client.ResetPassword(ctx, username, discarded); err != nil {
+		return err
+	}
+	b.Logger().Info("managed password discarded",
+		"keycloak_username", username,
+	)
+	return nil
 }
 
 func (b *keycloakBackend) pathRoleDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {

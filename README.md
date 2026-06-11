@@ -89,7 +89,8 @@ This plugin mounts as a Vault secrets engine and provides endpoints to:
 ```mermaid
 flowchart TD
   A[Vault background tick ~1 min] --> B[List all roles]
-  B --> C{For each non-ephemeral role}
+  B --> C{For each static role}
+  C -->|skipped: missing rotation_period or username shared by multiple roles| I
   C -->|rotation overdue| D[Generate random password]
   D --> E[Call Keycloak Admin API reset-password]
   E --> F[Store password in Vault storage]
@@ -101,6 +102,27 @@ flowchart TD
 
   J[Operator reads static-creds/role] --> K[Load stored credential]
   K --> L[Return username + password + last_rotation]
+```
+
+### Static role lifecycle (write / convert / delete)
+
+```mermaid
+flowchart TD
+  A[Operator writes roles/name] --> B{Validate incl. username exclusivity}
+  B -->|invalid| C[Error: nothing stored]
+  B -->|new static role, username changed, or converted to static| D[Rotate password FIRST]
+  D -->|rotation fails| E[Error: prior role left untouched]
+  D -->|ok| F[Persist role]
+  B -->|converted to ephemeral| G[Discard live password + delete stored credential]
+  G -->|discard fails| H[Error: role stays static and managed]
+  G -->|ok| F
+  B -->|update, no rotation needed| F
+
+  I[Operator deletes roles/name] --> J{Static role?}
+  J -->|yes| K[Discard live password]
+  K -->|Keycloak unreachable| L[Error: role kept, retry later]
+  K -->|ok| M[Delete role + stored credential]
+  J -->|no: ephemeral| M
 ```
 
 ### Ephemeral role
@@ -450,7 +472,7 @@ Filter only plugin-relevant messages:
 
 ```bash
 kubectl logs -n vault vault-0 --tail=500 \
-  | grep -E 'keycloak|password rotated|static credential rotated|failed to create Keycloak client|connection test failed|failed to initialise'
+  | grep -E 'keycloak|password rotated|static credential rotated|password discarded|periodic:|failed to create Keycloak client|connection test failed|failed to initialise'
 ```
 
 Operational/healthy examples:
@@ -460,6 +482,8 @@ Operational/healthy examples:
 - `password rotated successfully` with fields such as `role` and `keycloak_username`
 - `static credential rotated` with fields such as `role` and `keycloak_username`
 - `static cred timer reset after manual rotation` with fields such as `role` and `keycloak_username`
+- `managed password discarded` with the field `keycloak_username` (static role
+  deleted, converted to ephemeral, or an ephemeral lease revoked)
 - `kv secret updated successfully` with fields such as `kv_secret_path` and `kv_password_key`
 
 Error examples:
@@ -469,7 +493,11 @@ Error examples:
 - `keycloak config saved but connection test failed`
 - `failed to rotate password`
 - `periodic: rotation failed` with fields such as `role` and `error`
-- `kv sync failed after password rotation`
+- `periodic: static role has no rotation_period; skipping`
+- `periodic: keycloak_username is mapped by multiple roles; skipping rotation`
+- `failed to sync static creds after manual rotation`
+- `kv sync failed after password rotation` (ephemeral / on-demand paths)
+- `kv sync failed after static rotation` (autorotation path)
 
 ## API reference
 
