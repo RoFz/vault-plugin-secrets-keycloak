@@ -580,3 +580,107 @@ func TestValidEphemeralRole(t *testing.T) {
 		t.Errorf("expected max_ttl=86400, got %v", resp.Data["max_ttl"])
 	}
 }
+
+// --- Config validation and client-caching regression tests (v0.3.0) ---
+
+func TestConfigWriteRejectsIncomplete(t *testing.T) {
+	b, storage := newTestBackend(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		data map[string]interface{}
+	}{
+		{"url only", map[string]interface{}{"url": "https://keycloak.example.com"}},
+		{"missing url", map[string]interface{}{
+			"master_admin_username": "admin",
+			"master_admin_password": "secret",
+		}},
+		{"missing password", map[string]interface{}{
+			"url":                   "https://keycloak.example.com",
+			"master_admin_username": "admin",
+		}},
+	}
+	for _, tc := range cases {
+		resp, err := b.HandleRequest(ctx, &logical.Request{
+			Operation: logical.CreateOperation,
+			Path:      "config",
+			Storage:   storage,
+			Data:      tc.data,
+		})
+		if err != nil {
+			t.Fatalf("%s: unexpected transport error: %v", tc.name, err)
+		}
+		if resp == nil || !resp.IsError() {
+			t.Errorf("%s: incomplete config write must be rejected", tc.name)
+		}
+	}
+
+	// Nothing may have been stored by the rejected writes.
+	cfg, err := getConfig(ctx, storage)
+	if err != nil {
+		t.Fatalf("getConfig error: %v", err)
+	}
+	if cfg != nil {
+		t.Fatal("rejected config writes must not persist anything")
+	}
+}
+
+func TestConfigPartialUpdateKeepsRequiredFields(t *testing.T) {
+	b, storage := newTestBackend(t)
+	ctx := context.Background()
+
+	if _, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.CreateOperation,
+		Path:      "config",
+		Storage:   storage,
+		Data: map[string]interface{}{
+			"url":                   "https://keycloak.example.com",
+			"master_admin_username": "admin",
+			"master_admin_password": "secret",
+		},
+	}); err != nil {
+		t.Fatalf("config write error: %v", err)
+	}
+
+	// An update that only touches an optional field must pass validation
+	// because required fields are merged from the stored config.
+	resp, err := b.HandleRequest(ctx, &logical.Request{
+		Operation: logical.UpdateOperation,
+		Path:      "config",
+		Storage:   storage,
+		Data:      map[string]interface{}{"kv_mount_path": "kv"},
+	})
+	if err != nil {
+		t.Fatalf("partial update error: %v", err)
+	}
+	if resp != nil && resp.IsError() {
+		t.Fatalf("partial update must succeed, got: %s", resp.Error())
+	}
+}
+
+func TestGetClientIncompleteConfigNoTypedNil(t *testing.T) {
+	b, storage := newTestBackend(t)
+	ctx := context.Background()
+
+	// Simulate an incomplete config persisted by a pre-validation version of
+	// the plugin: newClient will fail. Every getClient call must then return
+	// an error; a regression would cache a typed-nil interface on the first
+	// failure and return it with a nil error afterwards (panic on first use).
+	entry, err := logical.StorageEntryJSON("config", &keycloakConfig{
+		URL: "https://keycloak.example.com",
+	})
+	if err != nil {
+		t.Fatalf("storage entry error: %v", err)
+	}
+	if err := storage.Put(ctx, entry); err != nil {
+		t.Fatalf("storage put error: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		client, err := b.getClient(ctx, storage)
+		if err == nil {
+			t.Fatalf("call %d: expected error from getClient with incomplete config, got client %v", i+1, client)
+		}
+	}
+}

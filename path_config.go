@@ -196,6 +196,19 @@ func (b *keycloakBackend) pathConfigWrite(ctx context.Context, req *logical.Requ
 		config.KVToken = v.(string)
 	}
 
+	// The framework does not enforce Required on body fields; validate the
+	// merged config so an incomplete write can never be stored (newClient
+	// would reject it on every later request anyway, with a worse error).
+	if config.URL == "" {
+		return logical.ErrorResponse("url is required"), nil
+	}
+	if config.MasterAdminUsername == "" {
+		return logical.ErrorResponse("master_admin_username is required"), nil
+	}
+	if config.MasterAdminPassword == "" {
+		return logical.ErrorResponse("master_admin_password is required"), nil
+	}
+
 	entry, err := logical.StorageEntryJSON(configStoragePath, config)
 	if err != nil {
 		return nil, err

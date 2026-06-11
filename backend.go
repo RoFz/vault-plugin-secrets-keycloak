@@ -86,6 +86,12 @@ func (b *keycloakBackend) getClient(ctx context.Context, s logical.Storage) (key
 	b.lock.Lock()
 	unlockFunc = b.lock.Unlock
 
+	// Another goroutine may have created the client between the RUnlock and
+	// the Lock above.
+	if b.client != nil {
+		return b.client, nil
+	}
+
 	config, err := getConfig(ctx, s)
 	if err != nil {
 		return nil, err
@@ -94,7 +100,10 @@ func (b *keycloakBackend) getClient(ctx context.Context, s logical.Storage) (key
 		return nil, fmt.Errorf("configure the backend at 'config' before use")
 	}
 
-	b.client, err = newClient(config)
+	// Assign to a concrete pointer first: storing a nil *keycloakClient into
+	// the interface field would make `b.client != nil` true and hand out a
+	// typed-nil client (panic on first use) on every subsequent call.
+	client, err := newClient(config)
 	if err != nil {
 		b.Logger().Error("failed to create Keycloak client",
 			"url", config.URL,
@@ -104,6 +113,7 @@ func (b *keycloakBackend) getClient(ctx context.Context, s logical.Storage) (key
 		)
 		return nil, err
 	}
+	b.client = client
 
 	return b.client, nil
 }
