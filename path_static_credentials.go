@@ -109,6 +109,16 @@ func (b *keycloakBackend) periodicFunc(ctx context.Context, req *logical.Request
 		if role == nil || role.Ephemeral {
 			continue
 		}
+		// Defense in depth: a static role must have a positive rotation_period
+		// (the getRole compat shim classifies rotation_period==0 as ephemeral).
+		// Never rotate on a zero/negative period: with the time.Since check
+		// below it would rotate the user's password on every periodic tick.
+		if role.RotationPeriod <= 0 {
+			b.Logger().Error("periodic: static role has no rotation_period; skipping",
+				"role", roleName,
+			)
+			continue
+		}
 
 		cred, err := getStaticCred(ctx, req.Storage, roleName)
 		if err != nil {

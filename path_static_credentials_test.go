@@ -321,3 +321,111 @@ func TestPeriodicFuncSkipsEphemeralRoles(t *testing.T) {
 		t.Errorf("expected 0 ResetPassword calls for ephemeral role, got %d", len(fake.resetCalls))
 	}
 }
+
+// --- Legacy (v0.1.x/v0.2.x) role compatibility tests ---
+
+// putLegacyRole stores a raw role entry exactly as written by v0.1.x/v0.2.x
+// (no ephemeral field, no rotation_period), bypassing the current write path.
+func putLegacyRole(t *testing.T, storage logical.Storage, name, rawJSON string) {
+	t.Helper()
+	err := storage.Put(context.Background(), &logical.StorageEntry{
+		Key:   "roles/" + name,
+		Value: []byte(rawJSON),
+	})
+	if err != nil {
+		t.Fatalf("failed to store legacy role: %v", err)
+	}
+}
+
+func TestLegacyRoleShimClassifiesEphemeral(t *testing.T) {
+	b, storage := newTestBackend(t)
+	ctx := context.Background()
+
+	// v0.2.x role created WITHOUT an explicit ttl: GetOk never stores schema
+	// defaults, so TTL/MaxTTL are zero. Must still be classified ephemeral.
+	putLegacyRole(t, storage, "legacy-nottl", `{"keycloak_username":"legacy1-kc","ttl":0,"max_ttl":0,"kv_password_key":""}`)
+	// v0.2.x role with explicit ttl/max_ttl (stored as nanoseconds).
+	putLegacyRole(t, storage, "legacy-ttl", `{"keycloak_username":"legacy2-kc","ttl":3600000000000,"max_ttl":86400000000000,"kv_password_key":""}`)
+
+	for _, name := range []string{"legacy-nottl", "legacy-ttl"} {
+		role, err := b.getRole(ctx, storage, name)
+		if err != nil {
+			t.Fatalf("getRole(%s) error: %v", name, err)
+		}
+		if role == nil {
+			t.Fatalf("getRole(%s) returned nil", name)
+		}
+		if !role.Ephemeral {
+			t.Errorf("legacy role %q must be classified ephemeral, got static", name)
+		}
+	}
+}
+
+func TestPeriodicFuncNeverRotatesLegacyRoles(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	putLegacyRole(t, storage, "legacy-nottl", `{"keycloak_username":"legacy1-kc","ttl":0,"max_ttl":0,"kv_password_key":""}`)
+	putLegacyRole(t, storage, "legacy-ttl", `{"keycloak_username":"legacy2-kc","ttl":3600000000000,"max_ttl":86400000000000,"kv_password_key":""}`)
+
+	// Several ticks: a regression here would rotate on every single one.
+	for i := 0; i < 3; i++ {
+		if err := b.periodicFunc(ctx, &logical.Request{Storage: storage}); err != nil {
+			t.Fatalf("periodicFunc error: %v", err)
+		}
+	}
+
+	if len(fake.resetCalls) != 0 {
+		t.Fatalf("legacy roles must never be autorotated, got %d ResetPassword calls", len(fake.resetCalls))
+	}
+	for _, name := range []string{"legacy-nottl", "legacy-ttl"} {
+		cred, err := getStaticCred(ctx, storage, name)
+		if err != nil {
+			t.Fatalf("getStaticCred(%s) error: %v", name, err)
+		}
+		if cred != nil {
+			t.Errorf("no static credential must be created for legacy role %q", name)
+		}
+	}
+}
+
+func TestLegacyRoleCredsReadStillWorks(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+
+	putLegacyRole(t, storage, "legacy", `{"keycloak_username":"legacy-kc","ttl":0,"max_ttl":0,"kv_password_key":""}`)
+
+	resp, err := b.HandleRequest(context.Background(), &logical.Request{
+		Operation: logical.ReadOperation,
+		Path:      "creds/legacy",
+		Storage:   storage,
+	})
+	if err != nil {
+		t.Fatalf("creds read error: %v", err)
+	}
+	if resp == nil || resp.IsError() {
+		t.Fatalf("legacy role must remain readable via creds/<role>, got: %v", resp)
+	}
+	if resp.Data["password"] == "" {
+		t.Error("expected non-empty password for legacy role")
+	}
+	if len(fake.resetCalls) != 1 {
+		t.Fatalf("expected exactly 1 ResetPassword call, got %d", len(fake.resetCalls))
+	}
+}
+
+func TestPeriodicFuncSkipsNonPositiveRotationPeriod(t *testing.T) {
+	b, storage, fake := newTestBackendWithFakeClient(t)
+	ctx := context.Background()
+
+	// A corrupted or hand-edited entry: explicitly static with a negative
+	// period. The shim only reclassifies rotation_period==0, so this exercises
+	// the periodicFunc defense-in-depth guard.
+	putLegacyRole(t, storage, "corrupt", `{"keycloak_username":"corrupt-kc","ephemeral":false,"rotation_period":-1}`)
+
+	if err := b.periodicFunc(ctx, &logical.Request{Storage: storage}); err != nil {
+		t.Fatalf("periodicFunc error: %v", err)
+	}
+	if len(fake.resetCalls) != 0 {
+		t.Fatalf("roles with non-positive rotation_period must never rotate, got %d calls", len(fake.resetCalls))
+	}
+}

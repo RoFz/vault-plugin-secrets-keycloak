@@ -242,10 +242,12 @@ func (b *keycloakBackend) getRole(ctx context.Context, s logical.Storage, name s
 		return nil, fmt.Errorf("error decoding role: %w", err)
 	}
 
-	// Backward compat: roles written by v0.1.x/v0.2.0 have ttl/max_ttl but no
-	// ephemeral field and no rotation_period.  Treat them as ephemeral=true so
-	// they continue to work with creds/<role> unchanged.
-	if !role.Ephemeral && role.RotationPeriod == 0 && (role.TTL > 0 || role.MaxTTL > 0) {
+	// Backward compat: every role written by v0.1.x/v0.2.x is lease-bound and
+	// has no rotation_period (ttl/max_ttl may be zero too: GetOk never stores
+	// schema defaults, so roles created without an explicit ttl carry TTL=0).
+	// A missing rotation_period therefore always means ephemeral, so legacy
+	// roles keep working with creds/<role> and are never autorotated.
+	if !role.Ephemeral && role.RotationPeriod == 0 {
 		role.Ephemeral = true
 	}
 
