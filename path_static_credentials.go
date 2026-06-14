@@ -202,7 +202,7 @@ func (b *keycloakBackend) attemptKVSync(ctx context.Context, s logical.Storage, 
 	}
 	vaultAddr := config.KVAPIAddr
 	if vaultAddr == "" {
-		vaultAddr = "https://127.0.0.1:8200"
+		vaultAddr = defaultKVAddr
 	}
 	if _, err := writeKVSecret(ctx, vaultAddr, config.KVToken, config.KVMountPath, config.KVSecretPath, role.KVPasswordKey, cred.Password, config.KVTLSSkipVerify); err != nil {
 		b.Logger().Error("kv sync failed; will retry on the next periodic tick",

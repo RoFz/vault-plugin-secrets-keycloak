@@ -167,36 +167,11 @@ func (b *keycloakBackend) pathUsersRotate(ctx context.Context, req *logical.Requ
 		},
 	}
 
-	kvKey, _ := data.GetOk("kv_password_key")
-	if kvKey != nil && kvKey.(string) != "" {
-		config, err := getConfig(ctx, req.Storage)
-		if err == nil && config != nil && config.KVMountPath != "" && config.KVSecretPath != "" {
-			if config.KVToken == "" {
-				resp.Warnings = append(resp.Warnings, "kv sync skipped: kv_token not configured")
-			} else {
-				vaultAddr := config.KVAPIAddr
-				if vaultAddr == "" {
-					vaultAddr = "https://127.0.0.1:8200"
-				}
-				if warning, err := writeKVSecret(ctx, vaultAddr, config.KVToken, config.KVMountPath, config.KVSecretPath, kvKey.(string), password, config.KVTLSSkipVerify); err != nil {
-					b.Logger().Error("kv sync failed after password rotation",
-						"keycloak_username", username,
-						"kv_mount_path", config.KVMountPath,
-						"kv_secret_path", config.KVSecretPath,
-						"kv_password_key", kvKey.(string),
-						"error", err,
-					)
-					resp.Warnings = append(resp.Warnings, warning)
-				} else {
-					b.Logger().Info("kv secret updated successfully",
-						"keycloak_username", username,
-						"kv_secret_path", config.KVSecretPath,
-						"kv_password_key", kvKey.(string),
-					)
-				}
-			}
-		}
-	}
+	kvKeyRaw, _ := data.GetOk("kv_password_key")
+	kvKey, _ := kvKeyRaw.(string)
+	resp.Warnings = append(resp.Warnings,
+		b.syncKVForResponse(ctx, req.Storage, kvKey, password,
+			"keycloak_username", username)...)
 
 	return resp, nil
 }

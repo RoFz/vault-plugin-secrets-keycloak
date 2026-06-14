@@ -91,35 +91,9 @@ func (b *keycloakBackend) pathCredentialsRead(ctx context.Context, req *logical.
 		resp.Secret.MaxTTL = role.MaxTTL
 	}
 
-	if role.KVPasswordKey != "" {
-		config, err := getConfig(ctx, req.Storage)
-		if err == nil && config != nil && config.KVMountPath != "" && config.KVSecretPath != "" {
-			vaultAddr := config.KVAPIAddr
-			if vaultAddr == "" {
-				vaultAddr = "https://127.0.0.1:8200"
-			}
-			if config.KVToken == "" {
-				resp.Warnings = append(resp.Warnings, "kv sync skipped: kv_token not configured")
-			} else if warning, err := writeKVSecret(ctx, vaultAddr, config.KVToken, config.KVMountPath, config.KVSecretPath, role.KVPasswordKey, password, config.KVTLSSkipVerify); err != nil {
-				b.Logger().Error("kv sync failed after password rotation",
-					"role", roleName,
-					"keycloak_username", role.KeycloakUsername,
-					"kv_mount_path", config.KVMountPath,
-					"kv_secret_path", config.KVSecretPath,
-					"kv_password_key", role.KVPasswordKey,
-					"error", err,
-				)
-				resp.Warnings = append(resp.Warnings, warning)
-			} else {
-				b.Logger().Info("kv secret updated successfully",
-					"role", roleName,
-					"keycloak_username", role.KeycloakUsername,
-					"kv_secret_path", config.KVSecretPath,
-					"kv_password_key", role.KVPasswordKey,
-				)
-			}
-		}
-	}
+	resp.Warnings = append(resp.Warnings,
+		b.syncKVForResponse(ctx, req.Storage, role.KVPasswordKey, password,
+			"role", roleName, "keycloak_username", role.KeycloakUsername)...)
 
 	return resp, nil
 }
