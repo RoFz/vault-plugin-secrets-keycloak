@@ -130,6 +130,7 @@ tmbootpicker.efi
 # .claude/**/*.log
 CLAUDE.local.md
 .claude/
+.mcp.json
 
 # Gemini CLI
 gemini-debug.log
