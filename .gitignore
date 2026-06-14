@@ -35,6 +35,7 @@ vault/plugins/
 # Editor/IDE
 .idea/
 .vscode/
+.sonarlint/
 __pycache__/
 
 ## MacOS
