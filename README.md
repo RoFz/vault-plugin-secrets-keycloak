@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/RoFz/vault-plugin-secrets-keycloak/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RoFz/vault-plugin-secrets-keycloak/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/RoFz/vault-plugin-secrets-keycloak/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/RoFz/vault-plugin-secrets-keycloak/actions/workflows/codeql.yml)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=RoFz_vault-plugin-secrets-keycloak&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=RoFz_vault-plugin-secrets-keycloak)
 [![Coverage](https://raw.githubusercontent.com/RoFz/vault-plugin-secrets-keycloak/badges/.badges/main/coverage.svg)](tests/TESTING.md#testing-strategy)
 [![Release](https://img.shields.io/github/v/release/RoFz/vault-plugin-secrets-keycloak)](https://github.com/RoFz/vault-plugin-secrets-keycloak/releases/latest)
 [![Go](https://img.shields.io/badge/go-1.26-blue)](https://go.dev/doc/go1.26)
