@@ -127,7 +127,7 @@ is decommissioned. Therefore role delete and static-to-ephemeral conversion
 clean up Vault state ONLY (role entry, stored credential, stale fields); the
 live Keycloak password intentionally keeps working. Discard-rotation applies
 ONLY to lease revocation (defining lease semantic). Revocation on demand is
-composable: users/<username>/rotate, then delete. The earlier strict variant
+composable: `users/<username>/rotate`, then delete. The earlier strict variant
 ("fix(roles): discard the managed password on static role delete and mode switch", discard on both) was superseded by "fix(roles): leave passwords operational on role delete and mode conversion". Documented in README
 (security model, roles reference, lifecycle diagram).
 
