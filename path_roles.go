@@ -151,47 +151,14 @@ func (b *keycloakBackend) pathRoleWrite(ctx context.Context, req *logical.Reques
 		role.Ephemeral = v.(bool)
 	}
 
+	var modeErr *logical.Response
 	if role.Ephemeral {
-		// Ephemeral mode: ttl and max_ttl required, rotation_period rejected.
-		if v, ok := data.GetOk("rotation_period"); ok && v.(int) != 0 {
-			return logical.ErrorResponse("rotation_period is not allowed for ephemeral roles; use ttl and max_ttl instead"), nil
-		}
-		if v, ok := data.GetOk("ttl"); ok {
-			role.TTL = time.Duration(v.(int)) * time.Second
-		}
-		if role.TTL < 60*time.Second {
-			return logical.ErrorResponse("ttl is required for ephemeral roles and must be at least 1 minute (60s)"), nil
-		}
-		if v, ok := data.GetOk("max_ttl"); ok {
-			role.MaxTTL = time.Duration(v.(int)) * time.Second
-		}
-		if role.MaxTTL == 0 {
-			return logical.ErrorResponse("max_ttl is required for ephemeral roles"), nil
-		}
-		if role.MaxTTL < role.TTL {
-			return logical.ErrorResponse("max_ttl must be greater than or equal to ttl"), nil
-		}
-		// Ephemeral roles never autorotate; drop any rotation_period left over
-		// from a previous static phase.
-		role.RotationPeriod = 0
+		modeErr = applyEphemeralFields(role, data)
 	} else {
-		// Static (non-ephemeral) mode: rotation_period required, ttl/max_ttl rejected.
-		if v, ok := data.GetOk("ttl"); ok && v.(int) != 0 {
-			return logical.ErrorResponse("ttl is not allowed for static roles; use rotation_period instead"), nil
-		}
-		if v, ok := data.GetOk("max_ttl"); ok && v.(int) != 0 {
-			return logical.ErrorResponse("max_ttl is not allowed for static roles; use rotation_period instead"), nil
-		}
-		if v, ok := data.GetOk("rotation_period"); ok {
-			role.RotationPeriod = time.Duration(v.(int)) * time.Second
-		}
-		if role.RotationPeriod < 30*time.Minute {
-			return logical.ErrorResponse("rotation_period is required for static roles and must be at least 30 minutes (1800s)"), nil
-		}
-		// Static roles have no lease; drop any ttl/max_ttl left over from a
-		// previous ephemeral phase.
-		role.TTL = 0
-		role.MaxTTL = 0
+		modeErr = applyStaticFields(role, data)
+	}
+	if modeErr != nil {
+		return modeErr, nil
 	}
 
 	if v, ok := data.GetOk("kv_password_key"); ok {
@@ -205,51 +172,117 @@ func (b *keycloakBackend) pathRoleWrite(ctx context.Context, req *logical.Reques
 		return resp, err
 	}
 
-	// Converting static -> ephemeral stops managing the credential: drop the
-	// stored entry (static-creds/<name> no longer serves this role). The live
-	// Keycloak password is intentionally left working, so consumers survive
-	// the conversion (continuity-first design). To revoke it instead, call
-	// users/<username>/rotate before converting.
-	if prior != nil && !prior.Ephemeral && role.Ephemeral {
-		if err := req.Storage.Delete(ctx, staticCredsPrefix+name); err != nil {
-			return nil, err
-		}
-	}
-
 	// A static role needs an immediate rotation when it is new (or retrying a
 	// previously failed first rotation), repointed at a different Keycloak
 	// user (the stored credential belongs to the old user), or converted from
 	// ephemeral mode (any stored credential predates the conversion).
-	needsRotation := false
-	if !role.Ephemeral {
-		existingCred, err := getStaticCred(ctx, req.Storage, name)
-		if err != nil {
-			return nil, err
-		}
-		usernameChanged := prior != nil && prior.KeycloakUsername != role.KeycloakUsername
-		convertedToStatic := prior != nil && prior.Ephemeral
-		needsRotation = existingCred == nil || usernameChanged || convertedToStatic
+	needsRotation, err := determineNeedsRotation(ctx, req.Storage, name, prior, role)
+	if err != nil {
+		return nil, err
 	}
 
-	// Rotate BEFORE persisting: a failed rotation must leave any prior role
-	// definition untouched instead of deleting it.
-	if needsRotation {
-		if rotErr := b.rotateStaticCred(ctx, req.Storage, name, role); rotErr != nil {
-			return nil, fmt.Errorf("initial rotation failed: %w", rotErr)
-		}
-	}
-
-	if err := b.setRole(ctx, req.Storage, name, role); err != nil {
-		if needsRotation {
-			// Best effort: drop the just-written credential so storage cannot
-			// pair the prior role definition with the new user's password.
-			// periodicFunc re-rotates from the persisted role on the next tick.
-			_ = req.Storage.Delete(ctx, staticCredsPrefix+name)
-		}
+	if err := b.commitRole(ctx, req.Storage, name, prior, role, needsRotation); err != nil {
 		return nil, err
 	}
 
 	return nil, nil
+}
+
+// applyEphemeralFields validates and applies the ephemeral-mode fields onto
+// role: ttl and max_ttl are required, rotation_period is rejected. Returns an
+// error response to surface to the caller, or nil when the fields are valid.
+func applyEphemeralFields(role *keycloakRoleEntry, data *framework.FieldData) *logical.Response {
+	if v, ok := data.GetOk("rotation_period"); ok && v.(int) != 0 {
+		return logical.ErrorResponse("rotation_period is not allowed for ephemeral roles; use ttl and max_ttl instead")
+	}
+	if v, ok := data.GetOk("ttl"); ok {
+		role.TTL = time.Duration(v.(int)) * time.Second
+	}
+	if role.TTL < 60*time.Second {
+		return logical.ErrorResponse("ttl is required for ephemeral roles and must be at least 1 minute (60s)")
+	}
+	if v, ok := data.GetOk("max_ttl"); ok {
+		role.MaxTTL = time.Duration(v.(int)) * time.Second
+	}
+	if role.MaxTTL == 0 {
+		return logical.ErrorResponse("max_ttl is required for ephemeral roles")
+	}
+	if role.MaxTTL < role.TTL {
+		return logical.ErrorResponse("max_ttl must be greater than or equal to ttl")
+	}
+	// Ephemeral roles never autorotate; drop any rotation_period left over
+	// from a previous static phase.
+	role.RotationPeriod = 0
+	return nil
+}
+
+// applyStaticFields validates and applies the static-mode fields onto role:
+// rotation_period is required, ttl/max_ttl are rejected. Returns an error
+// response to surface to the caller, or nil when the fields are valid.
+func applyStaticFields(role *keycloakRoleEntry, data *framework.FieldData) *logical.Response {
+	if v, ok := data.GetOk("ttl"); ok && v.(int) != 0 {
+		return logical.ErrorResponse("ttl is not allowed for static roles; use rotation_period instead")
+	}
+	if v, ok := data.GetOk("max_ttl"); ok && v.(int) != 0 {
+		return logical.ErrorResponse("max_ttl is not allowed for static roles; use rotation_period instead")
+	}
+	if v, ok := data.GetOk("rotation_period"); ok {
+		role.RotationPeriod = time.Duration(v.(int)) * time.Second
+	}
+	if role.RotationPeriod < 30*time.Minute {
+		return logical.ErrorResponse("rotation_period is required for static roles and must be at least 30 minutes (1800s)")
+	}
+	// Static roles have no lease; drop any ttl/max_ttl left over from a
+	// previous ephemeral phase.
+	role.TTL = 0
+	role.MaxTTL = 0
+	return nil
+}
+
+// determineNeedsRotation reports whether a static role write must trigger an
+// immediate rotation: when it is new (or retrying a previously failed first
+// rotation), repointed at a different Keycloak user (the stored credential
+// belongs to the old user), or converted from ephemeral mode (any stored
+// credential predates the conversion). Ephemeral roles never need one.
+func determineNeedsRotation(ctx context.Context, s logical.Storage, name string, prior, role *keycloakRoleEntry) (bool, error) {
+	if role.Ephemeral {
+		return false, nil
+	}
+	existingCred, err := getStaticCred(ctx, s, name)
+	if err != nil {
+		return false, err
+	}
+	usernameChanged := prior != nil && prior.KeycloakUsername != role.KeycloakUsername
+	convertedToStatic := prior != nil && prior.Ephemeral
+	return existingCred == nil || usernameChanged || convertedToStatic, nil
+}
+
+// commitRole writes the role to storage. It clears the static credential when
+// converting static -> ephemeral (continuity-first: the live Keycloak password
+// is left working), rotates before persisting when needsRotation is set (a
+// failed rotation must leave any prior definition untouched), and rolls back
+// the credential if the final store fails.
+func (b *keycloakBackend) commitRole(ctx context.Context, s logical.Storage, name string, prior, role *keycloakRoleEntry, needsRotation bool) error {
+	if prior != nil && !prior.Ephemeral && role.Ephemeral {
+		if err := s.Delete(ctx, staticCredsPrefix+name); err != nil {
+			return err
+		}
+	}
+	if needsRotation {
+		if err := b.rotateStaticCred(ctx, s, name, role); err != nil {
+			return fmt.Errorf("initial rotation failed: %w", err)
+		}
+	}
+	if err := b.setRole(ctx, s, name, role); err != nil {
+		if needsRotation {
+			// Best effort: drop the just-written credential so storage cannot
+			// pair the prior role definition with the new user's password.
+			// periodicFunc re-rotates from the persisted role on the next tick.
+			_ = s.Delete(ctx, staticCredsPrefix+name)
+		}
+		return err
+	}
+	return nil
 }
 
 // checkUsernameExclusive returns an error response when the candidate role's
