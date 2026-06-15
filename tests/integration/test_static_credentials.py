@@ -90,7 +90,7 @@ def test_static_creds_returns_expected_fields(vault_client, static_role):
     assert isinstance(data["password"], str)
     assert len(data["password"]) > 0
     assert "last_rotation" in data
-    assert data["rotation_period"] == 1800.0  # 30m in seconds
+    assert data["rotation_period"] == 1800  # 30m in seconds
     assert "next_rotation" in data
     assert data["kv_synced"] is True  # KV sync is configured and must have landed
 
