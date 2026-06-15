@@ -255,6 +255,95 @@ func (b *keycloakBackend) retryKVSync(ctx context.Context, s logical.Storage, ro
 	b.attemptKVSync(ctx, s, roleName, role, config, cred)
 }
 
+// loadRolesWithUsernameCounts loads every named role and tallies how many roles
+// map each Keycloak username. Role writes enforce username exclusivity, but
+// storage may predate that validation (upgrades); rotating a shared username
+// would invalidate the other role's stored password, so the periodic sweep
+// uses these counts to skip shared usernames.
+func (b *keycloakBackend) loadRolesWithUsernameCounts(ctx context.Context, s logical.Storage, roleNames []string) (map[string]*keycloakRoleEntry, map[string]int) {
+	loaded := make(map[string]*keycloakRoleEntry, len(roleNames))
+	usernameCount := make(map[string]int, len(roleNames))
+	for _, roleName := range roleNames {
+		role, err := b.getRole(ctx, s, roleName)
+		if err != nil {
+			b.Logger().Error("periodic: failed to load role", "role", roleName, "error", err)
+			continue
+		}
+		if role == nil {
+			continue
+		}
+		loaded[roleName] = role
+		usernameCount[role.KeycloakUsername]++
+	}
+	return loaded, usernameCount
+}
+
+// rotateRoleIfDuePeriodic runs the periodic-sweep decision for one static role:
+// skip invalid or shared-username roles, retry a still-pending KV sync when the
+// credential is fresh, honour the failure backoff, and otherwise attempt a
+// non-blocking due-rotation. Failures are recorded for backoff; successes clear
+// it.
+func (b *keycloakBackend) rotateRoleIfDuePeriodic(ctx context.Context, s logical.Storage, roleName string, role *keycloakRoleEntry, usernameCount map[string]int, config *keycloakConfig) {
+	// Defense in depth: a static role must have a positive rotation_period
+	// (the getRole compat shim classifies rotation_period==0 as ephemeral).
+	// Never rotate on a zero/negative period: with the time.Since check
+	// below it would rotate the user's password on every periodic tick.
+	if role.RotationPeriod <= 0 {
+		b.Logger().Error("periodic: static role has no rotation_period; skipping",
+			"role", roleName,
+		)
+		return
+	}
+	if usernameCount[role.KeycloakUsername] > 1 {
+		b.Logger().Error("periodic: keycloak_username is mapped by multiple roles; skipping rotation",
+			"role", roleName,
+			"keycloak_username", role.KeycloakUsername,
+		)
+		return
+	}
+
+	cred, err := getStaticCred(ctx, s, roleName)
+	if err != nil {
+		b.Logger().Error("periodic: failed to load static cred", "role", roleName, "error", err)
+		return
+	}
+
+	needsRotation := cred == nil || time.Since(cred.LastRotation) >= role.RotationPeriod
+	if !needsRotation {
+		// A rotation succeeded since the last failure (scheduled or
+		// manual): forget the failure history. If that rotation's KV sync
+		// is still pending, retry it now without rotating.
+		b.clearRotationBackoff(roleName)
+		if !cred.KVSynced {
+			b.retryKVSync(ctx, s, roleName, role, config)
+		}
+		return
+	}
+
+	if wait := b.rotationBackoffRemaining(roleName); wait > 0 {
+		b.Logger().Debug("periodic: backing off after failed rotations",
+			"role", roleName,
+			"retry_in", wait.Round(time.Second).String(),
+		)
+		return
+	}
+
+	// IfDue: skips without blocking when another rotation holds the lock,
+	// and re-checks the timestamp under the lock so a manual rotation
+	// that completed in the meantime defers this scheduled one.
+	switch err := b.rotateStaticCredIfDue(ctx, s, roleName, role); {
+	case errors.Is(err, errRotationInProgress):
+		b.Logger().Debug("periodic: another rotation in progress; skipping",
+			"role", roleName,
+		)
+	case err != nil:
+		b.recordRotationFailure(roleName)
+		b.Logger().Error("periodic: rotation failed", "role", roleName, "error", err)
+	default:
+		b.clearRotationBackoff(roleName)
+	}
+}
+
 // periodicFunc is called by Vault approximately every minute. It rotates any
 // static role whose rotation_period has elapsed since the last rotation.
 func (b *keycloakBackend) periodicFunc(ctx context.Context, req *logical.Request) error {
@@ -284,88 +373,16 @@ func (b *keycloakBackend) periodicFunc(ctx context.Context, req *logical.Request
 		return fmt.Errorf("periodic: failed to list roles: %w", err)
 	}
 
-	// First pass: load every role and count how many map each username. Role
-	// writes enforce exclusivity, but storage may predate that validation
-	// (upgrades), and rotating a shared username would invalidate the other
-	// role's stored password.
-	loaded := make(map[string]*keycloakRoleEntry, len(roles))
-	usernameCount := make(map[string]int, len(roles))
-	for _, roleName := range roles {
-		role, err := b.getRole(ctx, req.Storage, roleName)
-		if err != nil {
-			b.Logger().Error("periodic: failed to load role", "role", roleName, "error", err)
-			continue
-		}
-		if role == nil {
-			continue
-		}
-		loaded[roleName] = role
-		usernameCount[role.KeycloakUsername]++
-	}
+	// First pass: load every role and tally usernames so shared usernames can
+	// be skipped (see loadRolesWithUsernameCounts).
+	loaded, usernameCount := b.loadRolesWithUsernameCounts(ctx, req.Storage, roles)
 
 	for _, roleName := range roles {
 		role := loaded[roleName]
 		if role == nil || role.Ephemeral {
 			continue
 		}
-		// Defense in depth: a static role must have a positive rotation_period
-		// (the getRole compat shim classifies rotation_period==0 as ephemeral).
-		// Never rotate on a zero/negative period: with the time.Since check
-		// below it would rotate the user's password on every periodic tick.
-		if role.RotationPeriod <= 0 {
-			b.Logger().Error("periodic: static role has no rotation_period; skipping",
-				"role", roleName,
-			)
-			continue
-		}
-		if usernameCount[role.KeycloakUsername] > 1 {
-			b.Logger().Error("periodic: keycloak_username is mapped by multiple roles; skipping rotation",
-				"role", roleName,
-				"keycloak_username", role.KeycloakUsername,
-			)
-			continue
-		}
-
-		cred, err := getStaticCred(ctx, req.Storage, roleName)
-		if err != nil {
-			b.Logger().Error("periodic: failed to load static cred", "role", roleName, "error", err)
-			continue
-		}
-
-		needsRotation := cred == nil || time.Since(cred.LastRotation) >= role.RotationPeriod
-		if !needsRotation {
-			// A rotation succeeded since the last failure (scheduled or
-			// manual): forget the failure history. If that rotation's KV sync
-			// is still pending, retry it now without rotating.
-			b.clearRotationBackoff(roleName)
-			if !cred.KVSynced {
-				b.retryKVSync(ctx, req.Storage, roleName, role, config)
-			}
-			continue
-		}
-
-		if wait := b.rotationBackoffRemaining(roleName); wait > 0 {
-			b.Logger().Debug("periodic: backing off after failed rotations",
-				"role", roleName,
-				"retry_in", wait.Round(time.Second).String(),
-			)
-			continue
-		}
-
-		// IfDue: skips without blocking when another rotation holds the lock,
-		// and re-checks the timestamp under the lock so a manual rotation
-		// that completed in the meantime defers this scheduled one.
-		switch err := b.rotateStaticCredIfDue(ctx, req.Storage, roleName, role); {
-		case errors.Is(err, errRotationInProgress):
-			b.Logger().Debug("periodic: another rotation in progress; skipping",
-				"role", roleName,
-			)
-		case err != nil:
-			b.recordRotationFailure(roleName)
-			b.Logger().Error("periodic: rotation failed", "role", roleName, "error", err)
-		default:
-			b.clearRotationBackoff(roleName)
-		}
+		b.rotateRoleIfDuePeriodic(ctx, req.Storage, roleName, role, usernameCount, config)
 	}
 
 	return nil
