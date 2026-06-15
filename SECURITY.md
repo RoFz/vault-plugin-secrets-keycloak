@@ -48,5 +48,6 @@ This policy was shaped by the following sources:
 Internal security reviews of major features are documented in the repository:
 
 - [Static roles and autorotation (v0.3.0)](docs/security-review-v0.3.0.md):
-  full-source review of the autorotation feature; all findings resolved
-  before release.
+  full-source review of the autorotation feature (all findings resolved
+  before release), plus a 2026-06-14 rotation-atomicity follow-up whose open
+  findings are tracked as issues.

@@ -1,12 +1,18 @@
 # Security review: static roles and autorotation (v0.3.0)
 
-Record of the full-source security review of the `feat/autorotation` branch,
-conducted and fully resolved on 2026-06-11, before the v0.3.0 release. Every
-finding below was fixed on the branch and verified (see the final gate in
-step 12). Steps are numbered in execution order, which followed priority:
-P0 (critical) -> P1 (high) -> P2 (hardening) -> P3 (tests, docs, release
-hygiene). Commits are referenced by subject; the full sequence is visible in
-the v0.3.0 pull request.
+Security review record for the `feat/autorotation` branch. It contains two
+reviews:
+
+1. **Full review (2026-06-11)** — full-source review, conducted and fully
+   resolved before the v0.3.0 release. Every finding was fixed on the branch
+   and verified (see the final gate in step 12). Steps are numbered in
+   execution order, following priority P0 (critical) -> P1 (high) ->
+   P2 (hardening) -> P3 (tests, docs, release hygiene).
+2. **Follow-up review (2026-06-14)** — a focused re-review of rotation
+   atomicity (final section). Its findings are OPEN and tracked as issues.
+
+Commits are referenced by subject; the full sequence is visible in the v0.3.0
+pull request.
 
 ---
 
@@ -242,3 +248,134 @@ Next: open the PR (plan.md Step 12, title `feat:` for v0.3.0).
   surface, tracked separately from this feature branch.
 - Crash between ResetPassword and storage write: self-heals on the next
   periodic tick; add a code comment, no WAL needed at a 1-minute cadence.
+
+---
+
+## Follow-up review — rotation atomicity (2026-06-14)
+
+Focused re-review of the `feat/autorotation` branch, conducted on 2026-06-14
+by the domain-tuned `security-reviewer` subagent against `git diff main...HEAD`.
+Credential handling, trust boundaries, and input validation were re-confirmed
+clean within the diff. The findings below are rotation-atomicity gaps at the
+storage-write point; both relate to items addressed or accepted in the full
+review above, and both are OPEN, tracked as issues.
+
+> **Maintainer fact-check (2026-06-15).** The findings below were verified
+> against the source before triage; the original subagent draft over-claimed
+> on two points, corrected inline and marked **[corrected]**:
+>
+> - **F1** mis-described the mechanism. Two concurrent *identical* role writes
+>   cannot split the password (the rotation lock makes `ResetPassword` +
+>   `setStaticCred` atomic). The real gap is narrower and lower severity:
+>   concurrent *conflicting* edits to the same role. Reframed below; tracked
+>   as **issue #59** (low).
+> - **F2** is not new: username exclusivity (finding #5) bounds the sync loop
+>   to at most one static role, so the "partial loop" framing does not occur in
+>   normal operation. It reduces to the manual-path crash window already
+>   tracked as **issue #50**, where it has been recorded.
+> - Line numbers in the original draft were fabricated; references below use
+>   function names.
+
+### Clean categories (re-confirmed 2026-06-14)
+
+- **Credential handling**: no password, client secret, or bearer token is
+  written to an `hclog` line, wrapped into an error, or returned outside the
+  intended response fields. The bearer token stays in the `Authorization`
+  header (`client.go`), never in a URL. `static-creds/*` is added to
+  `SealWrapStorage` (`backend.go`).
+- **Trust boundaries**: the new code makes no direct Keycloak HTTP calls; it
+  routes through `keycloakClient`, whose admin calls check status before
+  trusting the body and `url.QueryEscape` the username. The HTTP client has a
+  30s timeout (`client.go`).
+- **Input validation**: request fields reaching Keycloak are regex/type
+  bounded (`name`, `username`); `rotation_period` has a 30-minute floor;
+  `pathConfigWrite` rejects incomplete configs.
+
+### F1. pathRoleWrite is not atomic against concurrent conflicting edits (low, OPEN) [corrected]
+
+- File: `pathRoleWrite` (`path_roles.go`)
+- Tracked as: **issue #59**.
+- Relates to: finding #6 (rotation lock). #6 holds `b.rotationLock` across each
+  `ResetPassword + setStaticCred` critical section inside `rotateStaticCred`,
+  which serializes `periodicFunc`, `users/<name>/rotate`, and the role-write
+  initial rotation against each other. This finding is the residual gap #6 does
+  not cover: `pathRoleWrite` holds the lock only inside the nested
+  `rotateStaticCred` call, not across its own read-modify-rotate-write handler.
+  Vault does not serialize concurrent writes to the same logical path (engines
+  self-lock with `locksutil` when they need it; this plugin does so only at the
+  inner rotation).
+- **[corrected] What does NOT happen:** the original draft claimed two
+  concurrent identical role writes leave storage holding password Pa while
+  Keycloak has Pb. That is impossible: the rotation lock makes
+  `ResetPassword` + `setStaticCred` atomic, so the last locked section sets
+  Keycloak and storage to the *same* password. `staticCredEntry` stores no
+  username, so there is nothing to mismatch on identical writes.
+- **[corrected] The real gap:** two concurrent writes that change the *same
+  role* to *different* usernames (or a conversion-to-ephemeral racing a static
+  write). The unlocked `setRole` / `static-creds` delete is last-writer-wins
+  and can disagree with the cred the serialized rotation wrote: the role
+  definition says username X while the stored cred holds the password set on
+  user Y, or an orphaned cred survives a race with conversion. It does **not**
+  self-heal on the next tick: the cred is freshly written, so the role is not
+  overdue and `periodicFunc` will not re-rotate it for a full
+  `rotation_period`.
+- Severity: low. Requires concurrent *conflicting* edits to one role name (an
+  unusual operator action); config writes are last-writer-wins regardless.
+  Defense-in-depth.
+- Fix direction: hold `b.rotationLock` (or a per-role lock) across the whole
+  `pathRoleWrite` critical section (the `needsRotation` decision through
+  `setRole` and the conversion-time `static-creds` delete), so
+  decision-rotate-persist is atomic with respect to the other rotation paths.
+- Test: two concurrent `pathRoleWrite` calls changing the same role to
+  *different* usernames under `-race`; assert the persisted role's username and
+  the stored cred's password belong to the same Keycloak user.
+
+### F2. Manual rotation crash window can leave a static role serving a dead password (low, OPEN) [corrected]
+
+- Files: `pathUsersRotate` (`path_users.go`),
+  `syncStaticCredsForUsername` (`path_static_credentials.go`)
+- Tracked as: **issue #50** (the verified scope is recorded there). The in-code
+  comment in `rotateStaticCredLocked` already acknowledges this window, and the
+  out-of-scope section above accepts the ResetPassword/storage crash window for
+  the *periodic* path. This is the *manual* path variant, which does not
+  self-heal on the same cadence.
+- **[corrected] The original draft's framing ("partway through the per-role
+  loop", several static roles left inconsistent) does not occur in normal
+  operation.** Username exclusivity (finding #5) forbids a static role's
+  username from being shared, so `syncStaticCredsForUsername` updates at most
+  one static role per username. The multi-role partial-loop case exists only in
+  legacy pre-exclusivity storage, which `periodicFunc` already excludes from
+  rotation (its `usernameCount > 1` skip).
+- Problem (verified scope): a single static role, manual `users/<name>/rotate`,
+  process death after `ResetPassword` succeeds but before `setStaticCred`. The
+  role keeps its old stored password, now dead in Keycloak. Because
+  `LastRotation` is unchanged, the role is NOT overdue, so `periodicFunc` will
+  not re-rotate it until a full `rotation_period` elapses (minimum 30 minutes;
+  operator-set values widen the window).
+- Fix direction: persist a pending-rotation marker (or a "needs reconcile"
+  flag) before calling `ResetPassword`, and have `periodicFunc` reconcile any
+  role whose stored password predates the last known manual rotation,
+  independent of `rotation_period`.
+- Test: inject a failure after `ResetPassword` (and, for the legacy multi-role
+  case, after the first `setStaticCred`); assert `periodicFunc` reconciles the
+  un-updated role on the next tick rather than waiting a full
+  `rotation_period`.
+
+### F3. Scheduled-path ordering is correct and self-healing (informational)
+
+- File: `rotateStaticCredLocked` (`path_static_credentials.go`)
+- The scheduled ordering is correct: `ResetPassword` (Keycloak) precedes
+  `setStaticCred` (storage), so a crash in between leaves the role overdue and
+  the next periodic tick re-rotates. The old password is invalidated
+  immediately on success (no lingering valid old credential), and the new
+  password is never "persisted but not activated" because Keycloak activation
+  happens first. Residual exposure is only the manual path in F2.
+
+### Relationship to the full review
+
+- F1 narrows finding #6: the lock exists and covers the inner rotation, but not
+  the outer `pathRoleWrite` handler.
+- F2 is the manual-path instance of the crash window the full review accepted
+  as out-of-scope for the periodic path; it is tracked as issue #50.
+- No regression in the categories the full review hardened (credential leakage,
+  trust boundaries, input validation) was found.
