@@ -101,6 +101,8 @@ Code must also be formatted with [gofumpt](https://github.com/mvdan/gofumpt):
 gofumpt -w .
 ```
 
+The project is also analyzed by [SonarQube Cloud](https://sonarcloud.io/project/overview?id=RoFz_vault-plugin-secrets-keycloak), which runs automatically on the `main` branch and on pull requests through its GitHub App. There is no in-repo Sonar configuration or CI workflow, so nothing needs to be run locally.
+
 ## Commit Messages
 
 This project uses [Conventional Commits](https://www.conventionalcommits.org/)
