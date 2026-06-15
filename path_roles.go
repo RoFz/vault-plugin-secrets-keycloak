@@ -9,6 +9,9 @@ import (
 	"github.com/hashicorp/vault/sdk/logical"
 )
 
+// rolesPrefix is the storage and path prefix for Keycloak role entries.
+const rolesPrefix = "roles/"
+
 // keycloakRoleEntry maps a Vault role name to a Keycloak username.
 type keycloakRoleEntry struct {
 	KeycloakUsername string        `json:"keycloak_username"`
@@ -35,7 +38,7 @@ func (r *keycloakRoleEntry) toResponseData() map[string]interface{} {
 func pathRole(b *keycloakBackend) []*framework.Path {
 	return []*framework.Path{
 		{
-			Pattern: "roles/" + framework.GenericNameRegex("name"),
+			Pattern: rolesPrefix + framework.GenericNameRegex("name"),
 			Fields: map[string]*framework.FieldSchema{
 				"name": {
 					Type:        framework.TypeLowerCaseString,
@@ -253,7 +256,7 @@ func (b *keycloakBackend) pathRoleWrite(ctx context.Context, req *logical.Reques
 // keycloak_username is already mapped by another role in a conflicting mode.
 // Sharing is allowed only between ephemeral roles.
 func (b *keycloakBackend) checkUsernameExclusive(ctx context.Context, s logical.Storage, name string, role *keycloakRoleEntry) (*logical.Response, error) {
-	roleNames, err := s.List(ctx, "roles/")
+	roleNames, err := s.List(ctx, rolesPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("error listing roles: %w", err)
 	}
@@ -313,7 +316,7 @@ func (b *keycloakBackend) pathRoleDelete(ctx context.Context, req *logical.Reque
 	// and a Vault decommission never strands services (continuity-first
 	// design). To revoke the credential instead, rotate it first:
 	// users/<username>/rotate, then delete the role.
-	if err := req.Storage.Delete(ctx, "roles/"+name); err != nil {
+	if err := req.Storage.Delete(ctx, rolesPrefix+name); err != nil {
 		return nil, err
 	}
 	if err := req.Storage.Delete(ctx, "static-creds/"+name); err != nil {
@@ -324,7 +327,7 @@ func (b *keycloakBackend) pathRoleDelete(ctx context.Context, req *logical.Reque
 }
 
 func (b *keycloakBackend) pathRoleList(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	entries, err := req.Storage.List(ctx, "roles/")
+	entries, err := req.Storage.List(ctx, rolesPrefix)
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +335,7 @@ func (b *keycloakBackend) pathRoleList(ctx context.Context, req *logical.Request
 }
 
 func (b *keycloakBackend) getRole(ctx context.Context, s logical.Storage, name string) (*keycloakRoleEntry, error) {
-	entry, err := s.Get(ctx, "roles/"+name)
+	entry, err := s.Get(ctx, rolesPrefix+name)
 	if err != nil {
 		return nil, err
 	}
@@ -365,7 +368,7 @@ func normalizeRole(role *keycloakRoleEntry) {
 }
 
 func (b *keycloakBackend) setRole(ctx context.Context, s logical.Storage, name string, role *keycloakRoleEntry) error {
-	entry, err := logical.StorageEntryJSON("roles/"+name, role)
+	entry, err := logical.StorageEntryJSON(rolesPrefix+name, role)
 	if err != nil {
 		return err
 	}
