@@ -26,10 +26,14 @@ func TestWriteKVSecret_CreatesWhenMissing(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	warning, err := writeKVSecret(
-		context.Background(),
-		srv.URL, "kv-token", "secret", "keycloak/app", "password", "pw-value", false,
-	)
+	warning, err := writeKVSecret(context.Background(), kvSyncRequest{
+		vaultAddr:   srv.URL,
+		callerToken: "kv-token",
+		mountPath:   "secret",
+		secretPath:  "keycloak/app",
+		key:         "password",
+		password:    "pw-value",
+	})
 	if err != nil {
 		t.Fatalf("create fallback must succeed; err=%v warning=%q", err, warning)
 	}

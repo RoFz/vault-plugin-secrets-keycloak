@@ -204,7 +204,15 @@ func (b *keycloakBackend) attemptKVSync(ctx context.Context, s logical.Storage, 
 	if vaultAddr == "" {
 		vaultAddr = defaultKVAddr
 	}
-	if _, err := writeKVSecret(ctx, vaultAddr, config.KVToken, config.KVMountPath, config.KVSecretPath, role.KVPasswordKey, cred.Password, config.KVTLSSkipVerify); err != nil {
+	if _, err := writeKVSecret(ctx, kvSyncRequest{
+		vaultAddr:     vaultAddr,
+		callerToken:   config.KVToken,
+		mountPath:     config.KVMountPath,
+		secretPath:    config.KVSecretPath,
+		key:           role.KVPasswordKey,
+		password:      cred.Password,
+		tlsSkipVerify: config.KVTLSSkipVerify,
+	}); err != nil {
 		b.Logger().Error("kv sync failed; will retry on the next periodic tick",
 			"role", roleName,
 			"kv_secret_path", config.KVSecretPath,

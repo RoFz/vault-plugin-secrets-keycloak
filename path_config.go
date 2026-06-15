@@ -170,6 +170,56 @@ func (b *keycloakBackend) pathConfigWrite(ctx context.Context, req *logical.Requ
 		priorTarget = config.Realm
 	}
 
+	mergeConfigFields(config, data)
+
+	// The framework does not enforce Required on body fields; validate the
+	// merged config so an incomplete write can never be stored (newClient
+	// would reject it on every later request anyway, with a worse error).
+	if config.URL == "" {
+		return logical.ErrorResponse("url is required"), nil
+	}
+	if config.MasterAdminUsername == "" {
+		return logical.ErrorResponse("master_admin_username is required"), nil
+	}
+	if config.MasterAdminPassword == "" {
+		return logical.ErrorResponse("master_admin_password is required"), nil
+	}
+
+	entry, err := logical.StorageEntryJSON(configStoragePath, config)
+	if err != nil {
+		return nil, err
+	}
+	if err := req.Storage.Put(ctx, entry); err != nil {
+		return nil, err
+	}
+
+	b.reset()
+
+	// Changing the Keycloak identity (url or effective target realm) while
+	// roles exist re-points every stored username at the new target; if the
+	// same username exists there, rotations will start resetting that other
+	// account's password. The write is allowed (realm renames are legitimate)
+	// but never silent.
+	effectiveTarget := config.TargetRealm
+	if effectiveTarget == "" {
+		effectiveTarget = config.Realm
+	}
+	var resp *logical.Response
+	if !isNew {
+		resp = identityChangeWarning(ctx, req.Storage, priorURL, priorTarget, effectiveTarget, config)
+	}
+
+	// Test connectivity immediately so the operator gets feedback at config time.
+	// The write succeeds regardless — Keycloak may not be reachable yet.
+	b.logConnectionTest(ctx, config, effectiveTarget)
+
+	return resp, nil
+}
+
+// mergeConfigFields applies the request fields onto config, leaving unset
+// fields untouched. realm defaults to "master" when neither provided in the
+// request nor already stored.
+func mergeConfigFields(config *keycloakConfig, data *framework.FieldData) {
 	if v, ok := data.GetOk("url"); ok {
 		config.URL = v.(string)
 	}
@@ -205,55 +255,12 @@ func (b *keycloakBackend) pathConfigWrite(ctx context.Context, req *logical.Requ
 	if v, ok := data.GetOk("kv_token"); ok {
 		config.KVToken = v.(string)
 	}
+}
 
-	// The framework does not enforce Required on body fields; validate the
-	// merged config so an incomplete write can never be stored (newClient
-	// would reject it on every later request anyway, with a worse error).
-	if config.URL == "" {
-		return logical.ErrorResponse("url is required"), nil
-	}
-	if config.MasterAdminUsername == "" {
-		return logical.ErrorResponse("master_admin_username is required"), nil
-	}
-	if config.MasterAdminPassword == "" {
-		return logical.ErrorResponse("master_admin_password is required"), nil
-	}
-
-	entry, err := logical.StorageEntryJSON(configStoragePath, config)
-	if err != nil {
-		return nil, err
-	}
-	if err := req.Storage.Put(ctx, entry); err != nil {
-		return nil, err
-	}
-
-	b.reset()
-
-	// Changing the Keycloak identity (url or effective target realm) while
-	// roles exist re-points every stored username at the new target; if the
-	// same username exists there, rotations will start resetting that other
-	// account's password. The write is allowed (realm renames are legitimate)
-	// but never silent.
-	var resp *logical.Response
-	effectiveTarget := config.TargetRealm
-	if effectiveTarget == "" {
-		effectiveTarget = config.Realm
-	}
-	if !isNew && (config.URL != priorURL || effectiveTarget != priorTarget) {
-		roles, err := req.Storage.List(ctx, "roles/")
-		if err == nil && len(roles) > 0 {
-			resp = &logical.Response{Warnings: []string{fmt.Sprintf(
-				"keycloak identity changed (url %q -> %q, target realm %q -> %q) while %d role(s) exist: "+
-					"their usernames now resolve against the new target, and stored static credentials "+
-					"were issued against the old one (they will be overwritten on the next rotation)",
-				priorURL, config.URL, priorTarget, effectiveTarget, len(roles),
-			)}}
-		}
-	}
-
-	// Test connectivity immediately so the operator gets feedback at config time.
-	// The write succeeds regardless — Keycloak may not be reachable yet.
-	targetRealm := effectiveTarget
+// logConnectionTest builds a client from the saved config and logs whether an
+// admin token can be obtained, so the operator gets immediate feedback. The
+// config write succeeds regardless of the outcome.
+func (b *keycloakBackend) logConnectionTest(ctx context.Context, config *keycloakConfig, targetRealm string) {
 	client, err := newClient(config)
 	if err != nil {
 		b.Logger().Error("keycloak config saved but client could not be created",
@@ -263,7 +270,9 @@ func (b *keycloakBackend) pathConfigWrite(ctx context.Context, req *logical.Requ
 			"master_admin_username", config.MasterAdminUsername,
 			"error", err,
 		)
-	} else if _, err := client.getAdminToken(ctx); err != nil {
+		return
+	}
+	if _, err := client.getAdminToken(ctx); err != nil {
 		b.Logger().Error("keycloak config saved but connection test failed",
 			"url", config.URL,
 			"realm", config.Realm,
@@ -271,16 +280,34 @@ func (b *keycloakBackend) pathConfigWrite(ctx context.Context, req *logical.Requ
 			"master_admin_username", config.MasterAdminUsername,
 			"error", err,
 		)
-	} else {
-		b.Logger().Info("keycloak config saved and connection test succeeded",
-			"url", config.URL,
-			"realm", config.Realm,
-			"target_realm", targetRealm,
-			"master_admin_username", config.MasterAdminUsername,
-		)
+		return
 	}
+	b.Logger().Info("keycloak config saved and connection test succeeded",
+		"url", config.URL,
+		"realm", config.Realm,
+		"target_realm", targetRealm,
+		"master_admin_username", config.MasterAdminUsername,
+	)
+}
 
-	return resp, nil
+// identityChangeWarning returns a response warning the operator when the
+// Keycloak identity (url or effective target realm) changed while roles exist:
+// their stored usernames now resolve against the new target. Returns nil when
+// no warning applies.
+func identityChangeWarning(ctx context.Context, s logical.Storage, priorURL, priorTarget, effectiveTarget string, config *keycloakConfig) *logical.Response {
+	if config.URL == priorURL && effectiveTarget == priorTarget {
+		return nil
+	}
+	roles, err := s.List(ctx, rolesPrefix)
+	if err != nil || len(roles) == 0 {
+		return nil
+	}
+	return &logical.Response{Warnings: []string{fmt.Sprintf(
+		"keycloak identity changed (url %q -> %q, target realm %q -> %q) while %d role(s) exist: "+
+			"their usernames now resolve against the new target, and stored static credentials "+
+			"were issued against the old one (they will be overwritten on the next rotation)",
+		priorURL, config.URL, priorTarget, effectiveTarget, len(roles),
+	)}}
 }
 
 func (b *keycloakBackend) pathConfigDelete(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
