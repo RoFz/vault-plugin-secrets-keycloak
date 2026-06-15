@@ -269,7 +269,7 @@ path. See [Testing strategy](#testing-strategy) for the risk tiers.
 
 ### Integration modules (pytest)
 
-The suite is split across four modules, each covering a distinct plugin path.
+The suite is split across five modules, each covering a distinct plugin path.
 
 | Module | Plugin paths covered |
 | --- | --- |
@@ -277,6 +277,7 @@ The suite is split across four modules, each covering a distinct plugin path.
 | `test_roles.py` | `keycloak/roles/<name>` |
 | `test_users.py` | `keycloak/users`, `keycloak/users/<name>`, `keycloak/users/<name>/rotate` |
 | `test_ephemeral_credentials.py` | `keycloak/creds/<role>` with KV sync |
+| `test_static_credentials.py` | `keycloak/static-creds/<name>`, autorotation, manual rotation, KV sync |
 
 ### Shared infrastructure (`conftest.py`)
 
@@ -317,16 +318,18 @@ Verifies the `keycloak/config` CRUD lifecycle:
 - Omitting `target_realm` causes the plugin to default it to the value of
   `realm`.
 
-### `test_roles.py` (5 tests)
+### `test_roles.py` (12 tests)
 
-Verifies role creation, update, deletion, listing, and input validation:
+Verifies role creation, update, deletion, listing, mode-specific input
+validation, and ephemeral<->static mode conversion, for both role modes:
 
-- Roles are created with `ttl` and `max_ttl` and their fields round-trip
-  correctly.
-- Updating a role's `ttl` is accepted.
-- Deleting a role causes subsequent reads to return nothing.
-- Listing roles returns all created role names.
-- Validation rejects `max_ttl` less than `ttl`.
+- Static and ephemeral roles are created and their fields round-trip correctly.
+- Updating a role is accepted; deleting a role makes subsequent reads return
+  nothing; listing returns all created role names.
+- Mode-specific validation: static roles reject `ttl`/`max_ttl` and enforce a
+  minimum `rotation_period`; ephemeral roles reject `rotation_period`, require a
+  minimum `ttl`, and require `max_ttl >= ttl`.
+- Converting a role between ephemeral and static and back round-trips correctly.
 
 ### `test_users.py` (6 tests)
 
@@ -340,7 +343,7 @@ Verifies the user introspection and on-demand rotation paths:
 - The returned password authenticates successfully in Keycloak.
 - Two successive rotations produce different passwords.
 
-### `test_ephemeral_credentials.py` (5 tests)
+### `test_ephemeral_credentials.py` (6 tests)
 
 Verifies the credential lifecycle including KV sync:
 
@@ -350,6 +353,21 @@ Verifies the credential lifecycle including KV sync:
 - The response carries a Vault lease with a positive TTL.
 - Reading with a role that has `kv_password_key` patches the KV v2 secret with
   the newly generated password.
+- Reading `creds/<role>` on a static role returns an error.
+
+### `test_static_credentials.py` (9 tests)
+
+Verifies static-role autorotation and the `static-creds/<name>` read path:
+
+- Reading `static-creds/<name>` returns the expected fields (`username`,
+  `password`, `last_rotation`, `rotation_period`, `next_rotation`, `kv_synced`).
+- The returned password authenticates in Keycloak.
+- Repeated reads return the same password (no lease, no per-read rotation).
+- Manual rotation via `users/<username>/rotate` changes the password, the new
+  password authenticates, the KV v2 secret is synced, and the autorotation
+  timer is reset.
+- Reading `static-creds/<name>` on an ephemeral role returns an error.
+- A second role mapping an already-used `keycloak_username` is rejected.
 
 ---
 
@@ -364,14 +382,14 @@ A passing run looks similar to:
 ```text
 ========================= test session starts ==========================
 platform darwin -- Python 3.12.8, pytest-9.0.3, pluggy-1.5.0
-collected 23 items
+collected 40 items
 
 tests/integration/test_config.py::test_config_read_returns_none_when_not_set PASSED
 tests/integration/test_config.py::test_config_write_and_read PASSED
 ...
 tests/integration/test_ephemeral_credentials.py::test_creds_syncs_kv_secret PASSED
 
-========================== 23 passed in ~35s ===========================
+========================== 40 passed in ~35s ===========================
 ```
 
 Total wall-clock time is typically 30-40 seconds, dominated by container
