@@ -28,7 +28,7 @@ so no go.mod/go.sum conflict will occur.
 
 ### 2. Fix the legacy-role autorotation storm (done 2026-06-11, commit "fix(autorotation): never autorotate legacy roles without rotation_period")
 
-- Files: `path_roles.go` (compat shim, lines 245-251), `path_static_credentials.go` (`periodicFunc`, line 119)
+- Files: `path_roles.go` (`normalizeRole` compat shim), `path_static_credentials.go` (`rotateRoleIfDuePeriodic`, the per-role periodic sweep)
 - Problem: roles created on v0.1.x/v0.2.x without an explicit `ttl`
   (`GetOk` never applies schema defaults, so `TTL=0, MaxTTL=0` was stored) are
   classified as static with `RotationPeriod=0` after upgrade. `needsRotation`
@@ -38,14 +38,14 @@ so no go.mod/go.sum conflict will occur.
 - Fix:
   - Shim: treat every role with `RotationPeriod == 0` as ephemeral,
     regardless of stored TTL values (legacy roles are always ephemeral).
-  - Defense in depth: `periodicFunc` skips any role with `RotationPeriod <= 0`.
+  - Defense in depth: the periodic sweep (`rotateRoleIfDuePeriodic`) skips any role with `RotationPeriod <= 0`.
 - Test: decode a v0.2.0-shaped role JSON fixture with `ttl=0`/no `ephemeral`
   field; assert it is ephemeral, never rotated by `periodicFunc`, and still
   usable via `creds/<role>`.
 
 ### 3. Fix the typed-nil client panic (done 2026-06-11, commit "fix(config): reject incomplete configs and never cache a typed-nil client")
 
-- Files: `backend.go` (line 97), `path_config.go` (`pathConfigWrite`)
+- Files: `backend.go` (`getClient`), `path_config.go` (`pathConfigWrite`)
 - Problem: `b.client, err = newClient(config)` stores a nil `*keycloakClient`
   into the `keycloakClientIface` field on failure. The interface is then
   non-nil, so every later `getClient` returns the typed-nil client with no
@@ -67,7 +67,7 @@ so no go.mod/go.sum conflict will occur.
 
 ### 4. Restructure role write: validate -> rotate -> persist (done 2026-06-11, commit "fix(roles): rotate before persisting so failed writes leave prior state intact")
 
-- File: `path_roles.go` (`pathRoleWrite`, lines 189-207)
+- File: `path_roles.go` (`pathRoleWrite`, with write/rotate/persist in `determineNeedsRotation` and `commitRole`)
 - Problems:
   - On initial-rotation failure the rollback deletes `roles/<name>`, which
     destroys a pre-existing role when converting ephemeral -> static.
