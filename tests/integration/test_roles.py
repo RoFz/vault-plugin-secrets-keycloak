@@ -71,7 +71,7 @@ def test_create_and_read_static_role(static_role, vault_client):
     data = vault_client.read(f"{PLUGIN_MOUNT}/roles/{static_role}")["data"]
     assert data["keycloak_username"] == TEST_USER_STATIC
     assert data["ephemeral"] is False
-    assert data["rotation_period"] == 1800.0  # 30m in seconds
+    assert data["rotation_period"] == 1800  # 30m in seconds
 
 
 def test_static_role_update(static_role, vault_client):
@@ -82,7 +82,7 @@ def test_static_role_update(static_role, vault_client):
         rotation_period="1h",
     )
     data = vault_client.read(f"{PLUGIN_MOUNT}/roles/{static_role}")["data"]
-    assert data["rotation_period"] == 3600.0  # 1h in seconds
+    assert data["rotation_period"] == 3600  # 1h in seconds
 
 
 def test_delete_static_role(vault_client, plugin_configured, role_name):
@@ -102,8 +102,8 @@ def test_create_and_read_ephemeral_role(ephemeral_role, vault_client):
     data = vault_client.read(f"{PLUGIN_MOUNT}/roles/{ephemeral_role}")["data"]
     assert data["keycloak_username"] == TEST_USER_STATIC
     assert data["ephemeral"] is True
-    assert data["ttl"] == 60.0     # 1m in seconds
-    assert data["max_ttl"] == 120.0  # 2m in seconds
+    assert data["ttl"] == 60     # 1m in seconds
+    assert data["max_ttl"] == 120  # 2m in seconds
 
 
 # ── List roles ────────────────────────────────────────────────────────────────
@@ -231,7 +231,7 @@ def test_mode_conversion_round_trip(vault_client, plugin_configured, role_name, 
         )
         data = vault_client.read(f"{PLUGIN_MOUNT}/roles/{role_name}")["data"]
         assert data["ephemeral"] is True
-        assert data["rotation_period"] == 0.0
+        assert data["rotation_period"] == 0
         with pytest.raises(hvac.exceptions.InvalidRequest):
             vault_client.read(f"{PLUGIN_MOUNT}/static-creds/{role_name}")
         assert keycloak_auth_check(TEST_USER_STATIC, password_static1), (
@@ -247,7 +247,7 @@ def test_mode_conversion_round_trip(vault_client, plugin_configured, role_name, 
         )
         data = vault_client.read(f"{PLUGIN_MOUNT}/roles/{role_name}")["data"]
         assert data["ephemeral"] is False
-        assert data["ttl"] == 0.0 and data["max_ttl"] == 0.0
+        assert data["ttl"] == 0 and data["max_ttl"] == 0
         password_static2 = vault_client.read(
             f"{PLUGIN_MOUNT}/static-creds/{role_name}"
         )["data"]["password"]
