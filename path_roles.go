@@ -211,7 +211,7 @@ func (b *keycloakBackend) pathRoleWrite(ctx context.Context, req *logical.Reques
 	// the conversion (continuity-first design). To revoke it instead, call
 	// users/<username>/rotate before converting.
 	if prior != nil && !prior.Ephemeral && role.Ephemeral {
-		if err := req.Storage.Delete(ctx, "static-creds/"+name); err != nil {
+		if err := req.Storage.Delete(ctx, staticCredsPrefix+name); err != nil {
 			return nil, err
 		}
 	}
@@ -244,7 +244,7 @@ func (b *keycloakBackend) pathRoleWrite(ctx context.Context, req *logical.Reques
 			// Best effort: drop the just-written credential so storage cannot
 			// pair the prior role definition with the new user's password.
 			// periodicFunc re-rotates from the persisted role on the next tick.
-			_ = req.Storage.Delete(ctx, "static-creds/"+name)
+			_ = req.Storage.Delete(ctx, staticCredsPrefix+name)
 		}
 		return nil, err
 	}
@@ -319,7 +319,7 @@ func (b *keycloakBackend) pathRoleDelete(ctx context.Context, req *logical.Reque
 	if err := req.Storage.Delete(ctx, rolesPrefix+name); err != nil {
 		return nil, err
 	}
-	if err := req.Storage.Delete(ctx, "static-creds/"+name); err != nil {
+	if err := req.Storage.Delete(ctx, staticCredsPrefix+name); err != nil {
 		return nil, err
 	}
 	b.clearRotationBackoff(name)

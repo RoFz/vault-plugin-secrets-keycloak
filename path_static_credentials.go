@@ -11,6 +11,9 @@ import (
 	"github.com/hashicorp/vault/sdk/logical"
 )
 
+// staticCredsPrefix is the storage and path prefix for static credential entries.
+const staticCredsPrefix = "static-creds/"
+
 // staticCredEntry holds the autorotated password for a static (non-ephemeral) role.
 type staticCredEntry struct {
 	Password     string    `json:"password"`
@@ -24,7 +27,7 @@ type staticCredEntry struct {
 
 // getStaticCred loads the stored credential for a static role. Returns nil if none exists yet.
 func getStaticCred(ctx context.Context, s logical.Storage, roleName string) (*staticCredEntry, error) {
-	entry, err := s.Get(ctx, "static-creds/"+roleName)
+	entry, err := s.Get(ctx, staticCredsPrefix+roleName)
 	if err != nil {
 		return nil, err
 	}
@@ -40,7 +43,7 @@ func getStaticCred(ctx context.Context, s logical.Storage, roleName string) (*st
 
 // setStaticCred persists a static credential entry.
 func setStaticCred(ctx context.Context, s logical.Storage, roleName string, cred *staticCredEntry) error {
-	entry, err := logical.StorageEntryJSON("static-creds/"+roleName, cred)
+	entry, err := logical.StorageEntryJSON(staticCredsPrefix+roleName, cred)
 	if err != nil {
 		return err
 	}
@@ -420,7 +423,7 @@ func (b *keycloakBackend) syncStaticCredsForUsername(ctx context.Context, s logi
 // pathStaticCreds registers the static-creds/<name> read endpoint.
 func pathStaticCreds(b *keycloakBackend) *framework.Path {
 	return &framework.Path{
-		Pattern: "static-creds/" + framework.GenericNameRegex("name"),
+		Pattern: staticCredsPrefix + framework.GenericNameRegex("name"),
 		Fields: map[string]*framework.FieldSchema{
 			"name": {
 				Type:        framework.TypeLowerCaseString,
