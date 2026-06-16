@@ -51,3 +51,10 @@ Internal security reviews of major features are documented in the repository:
   full-source review of the autorotation feature (all findings resolved
   before release), plus a 2026-06-14 rotation-atomicity follow-up whose open
   findings are tracked as issues.
+
+## Production hardening
+
+[Production hardening posture](docs/production-hardening.md) maps the plugin
+against HashiCorp's Vault production-hardening recommendations, marking each
+baseline and extended item as either met by the plugin or this repository, or
+an operator deployment / Vault-configuration responsibility.

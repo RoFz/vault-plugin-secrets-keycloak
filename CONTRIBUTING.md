@@ -35,6 +35,13 @@ go mod tidy
 go build ./...
 ```
 
+## Architecture
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a contributor-facing map of
+the plugin: a full endpoint inventory, a per-file code map, the request and
+rotation process flows annotated with the implementing source, and the security
+model.
+
 ## Running Tests
 
 Fast, no Docker required:
