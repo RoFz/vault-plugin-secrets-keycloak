@@ -12,7 +12,7 @@ on:
     # Run weekly on Mondays at 08:00 UTC
     - cron: '0 8 * * 1'
 
-permissions: read-all
+permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

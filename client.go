@@ -11,6 +11,9 @@ import (
 	"time"
 )
 
+// bearerPrefix is the HTTP Authorization scheme prefix for admin bearer tokens.
+const bearerPrefix = "Bearer "
+
 // keycloakUserInfo holds the fields returned by the Keycloak users API.
 type keycloakUserInfo struct {
 	ID        string `json:"id"`
@@ -19,6 +22,14 @@ type keycloakUserInfo struct {
 	Email     string `json:"email,omitempty"`
 	FirstName string `json:"firstName,omitempty"`
 	LastName  string `json:"lastName,omitempty"`
+}
+
+// keycloakClientIface is the subset of keycloakClient used by the backend.
+// Tests can substitute a fake implementation.
+type keycloakClientIface interface {
+	ResetPassword(ctx context.Context, username, password string) error
+	ListUsers(ctx context.Context) ([]keycloakUserInfo, error)
+	GetUser(ctx context.Context, username string) (*keycloakUserInfo, error)
 }
 
 // keycloakClient holds configuration and an HTTP client for the Keycloak Admin REST API.
@@ -122,7 +133,7 @@ func (c *keycloakClient) getUserIDByUsername(ctx context.Context, token, usernam
 	if err != nil {
 		return "", fmt.Errorf("error building users request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", bearerPrefix+token)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -180,7 +191,7 @@ func (c *keycloakClient) ResetPassword(ctx context.Context, username, password s
 	if err != nil {
 		return fmt.Errorf("error building reset-password request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", bearerPrefix+token)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -209,7 +220,7 @@ func (c *keycloakClient) ListUsers(ctx context.Context) ([]keycloakUserInfo, err
 	if err != nil {
 		return nil, fmt.Errorf("error building list-users request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", bearerPrefix+token)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -245,7 +256,7 @@ func (c *keycloakClient) GetUser(ctx context.Context, username string) (*keycloa
 	if err != nil {
 		return nil, fmt.Errorf("error building get-user request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", bearerPrefix+token)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

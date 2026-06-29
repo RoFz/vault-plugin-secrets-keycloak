@@ -44,6 +44,9 @@ func (b *keycloakBackend) pathCredentialsRead(ctx context.Context, req *logical.
 	if role == nil {
 		return logical.ErrorResponse("role %q not found", roleName), nil
 	}
+	if !role.Ephemeral {
+		return logical.ErrorResponse("role %q is not ephemeral; use static-creds/%s", roleName, roleName), nil
+	}
 
 	client, err := b.getClient(ctx, req.Storage)
 	if err != nil {
@@ -88,35 +91,9 @@ func (b *keycloakBackend) pathCredentialsRead(ctx context.Context, req *logical.
 		resp.Secret.MaxTTL = role.MaxTTL
 	}
 
-	if role.KVPasswordKey != "" {
-		config, err := getConfig(ctx, req.Storage)
-		if err == nil && config != nil && config.KVMountPath != "" && config.KVSecretPath != "" {
-			vaultAddr := config.KVAPIAddr
-			if vaultAddr == "" {
-				vaultAddr = "https://127.0.0.1:8200"
-			}
-			if config.KVToken == "" {
-				resp.Warnings = append(resp.Warnings, "kv sync skipped: kv_token not configured")
-			} else if warning, err := writeKVSecret(ctx, vaultAddr, config.KVToken, config.KVMountPath, config.KVSecretPath, role.KVPasswordKey, password, config.KVTLSSkipVerify); err != nil {
-				b.Logger().Error("kv sync failed after password rotation",
-					"role", roleName,
-					"keycloak_username", role.KeycloakUsername,
-					"kv_mount_path", config.KVMountPath,
-					"kv_secret_path", config.KVSecretPath,
-					"kv_password_key", role.KVPasswordKey,
-					"error", err,
-				)
-				resp.Warnings = append(resp.Warnings, warning)
-			} else {
-				b.Logger().Info("kv secret updated successfully",
-					"role", roleName,
-					"keycloak_username", role.KeycloakUsername,
-					"kv_secret_path", config.KVSecretPath,
-					"kv_password_key", role.KVPasswordKey,
-				)
-			}
-		}
-	}
+	resp.Warnings = append(resp.Warnings,
+		b.syncKVForResponse(ctx, req.Storage, role.KVPasswordKey, password,
+			"role", roleName, "keycloak_username", role.KeycloakUsername)...)
 
 	return resp, nil
 }
@@ -148,17 +125,7 @@ func (b *keycloakBackend) secretRevoke(ctx context.Context, req *logical.Request
 		return nil, fmt.Errorf("internal data missing keycloak_username")
 	}
 
-	client, err := b.getClient(ctx, req.Storage)
-	if err != nil {
-		return nil, err
-	}
-
-	discardedPassword, err := generatePassword()
-	if err != nil {
-		return nil, fmt.Errorf("error generating revocation password: %w", err)
-	}
-
-	if err := client.ResetPassword(ctx, username, discardedPassword); err != nil {
+	if err := b.discardPassword(ctx, req.Storage, username); err != nil {
 		return nil, fmt.Errorf("error revoking credential for user %q: %w", username, err)
 	}
 

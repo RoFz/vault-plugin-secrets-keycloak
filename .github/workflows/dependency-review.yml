@@ -5,7 +5,7 @@ on:
     branches:
       - main
 
-permissions: read-all
+permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

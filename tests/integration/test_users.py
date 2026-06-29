@@ -17,6 +17,7 @@ from conftest import (
     TEST_REALM,
     TEST_USER_EPHEMERAL,
     TEST_USER_ROTATE,
+    TEST_USER_STATIC,
 )
 
 
@@ -35,6 +36,7 @@ def test_list_users_returns_test_users(vault_client, plugin_configured):
     response = vault_client.list(f"{PLUGIN_MOUNT}/users")
     usernames = response["data"]["keys"]
 
+    assert TEST_USER_STATIC in usernames
     assert TEST_USER_EPHEMERAL in usernames
     assert TEST_USER_ROTATE in usernames
 

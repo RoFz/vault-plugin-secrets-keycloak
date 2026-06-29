@@ -35,6 +35,13 @@ go mod tidy
 go build ./...
 ```
 
+## Architecture
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a contributor-facing map of
+the plugin: a full endpoint inventory, a per-file code map, the request and
+rotation process flows annotated with the implementing source, and the security
+model.
+
 ## Running Tests
 
 Fast, no Docker required:
@@ -100,6 +107,8 @@ Code must also be formatted with [gofumpt](https://github.com/mvdan/gofumpt):
 ```sh
 gofumpt -w .
 ```
+
+The project is also analyzed by [SonarQube Cloud](https://sonarcloud.io/project/overview?id=RoFz_vault-plugin-secrets-keycloak), which runs automatically on the `main` branch and on pull requests through its GitHub App. There is no in-repo Sonar configuration or CI workflow, so nothing needs to be run locally.
 
 ## Commit Messages
 
