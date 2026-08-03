@@ -15,7 +15,7 @@ jobs:
     if: github.repository == 'RoFz/vault-plugin-secrets-keycloak'
     steps:
       - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -39,7 +39,7 @@ jobs:
 
       - name: Post
         # NOTE: Pinned to full commit SHA for supply-chain security.
-        uses: cbrgm/mastodon-github-action@244bbe72e61b4490e2dc1c34f9537ae9299ae601 # v2.2.1
+        uses: cbrgm/mastodon-github-action@ac2d8e8c9986a17b824dd12dd9df4ce5fcd813c1 # v2.2.2
         with:
           url: ${{ secrets.MASTODON_URL }}
           access-token: ${{ secrets.MASTODON_ACCESS_TOKEN }}
@@ -54,7 +54,7 @@ jobs:
     if: github.repository == 'RoFz/vault-plugin-secrets-keycloak'
     steps:
       - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
