@@ -15,7 +15,7 @@ jobs:
     if: github.repository == 'RoFz/vault-plugin-secrets-keycloak'
     steps:
       - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -39,7 +39,7 @@ jobs:
 
       - name: Post
         # NOTE: Pinned to full commit SHA for supply-chain security.
-        uses: cbrgm/mastodon-github-action@244bbe72e61b4490e2dc1c34f9537ae9299ae601 # v2.2.1
+        uses: cbrgm/mastodon-github-action@9ba8763f1daa436d73fb76abbc3e8b2ac8dfa943 # v2.2.4
         with:
           url: ${{ secrets.MASTODON_URL }}
           access-token: ${{ secrets.MASTODON_ACCESS_TOKEN }}
@@ -54,7 +54,7 @@ jobs:
     if: github.repository == 'RoFz/vault-plugin-secrets-keycloak'
     steps:
       - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -76,7 +76,7 @@ jobs:
 
       - name: Post
         # NOTE: Pinned to full commit SHA for supply-chain security.
-        uses: nearform-actions/github-action-notify-twitter@b3fa623c2f320117e8a08e20564c4ce0a5e67930 # v1.2.3
+        uses: nearform-actions/github-action-notify-twitter@fd83d603197ec1274182f4de9fbacc249db0d92b # v1.2.4
         with:
           message: ${{ steps.msg.outputs.message }}
           twitter-app-key: ${{ secrets.TWITTER_APP_KEY }}
